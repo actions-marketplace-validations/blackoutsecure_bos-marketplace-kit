@@ -38,6 +38,59 @@ inputs:
     required: false
     default: '.github/workflows'
 
+  # ----- Community-health (CH###) pass-throughs ----------------------------
+  # See `.github/actions/check/action.yml` for full semantics. These
+  # are forwarded verbatim to the nested check composite so consumers
+  # of the root action can configure org-health behaviour without
+  # switching to the nested form.
+
+  github_token:
+    description: >-
+      Token used for org-health API lookups. Defaults to `github.token`;
+      set explicitly to use a PAT/fine-grained token with cross-repo
+      contents:read.
+    required: false
+    default: ${{ github.token }}
+  org_health_repo:
+    description: >-
+      `owner/repo` containing fallback community-health files (e.g.
+      `blackoutsecure/.github`). Defaults to `${owner}/.github` if
+      empty.
+    required: false
+    default: ''
+  check_org_health:
+    description: '`true` to enable org-health lookups for CH### rules.'
+    required: false
+    default: 'true'
+  require_security:
+    description: "CH001 severity: 'fail', 'warn', or 'skip'."
+    required: false
+    default: 'warn'
+  require_code_of_conduct:
+    description: "CH002 severity: 'fail', 'warn', or 'skip'."
+    required: false
+    default: 'warn'
+  require_contributing:
+    description: "CH003 severity: 'fail', 'warn', or 'skip'."
+    required: false
+    default: 'warn'
+  require_support:
+    description: "CH004 severity: 'fail', 'warn', or 'skip'."
+    required: false
+    default: 'skip'
+  require_issue_templates:
+    description: "CH005 severity: 'fail', 'warn', or 'skip'."
+    required: false
+    default: 'skip'
+  require_pr_template:
+    description: "CH006 severity: 'fail', 'warn', or 'skip'."
+    required: false
+    default: 'skip'
+  require_funding:
+    description: "CH### funding severity: 'fail', 'warn', or 'skip'."
+    required: false
+    default: 'skip'
+
 outputs:
   passed:
     description: 'Number of checks that passed.'
@@ -58,7 +111,17 @@ runs:
     - id: check
       uses: ./.github/actions/check
       with:
-        action_yml_path: ${{ inputs.action_yml_path }}
-        fail_on_warning: ${{ inputs.fail_on_warning }}
-        skip_checks:     ${{ inputs.skip_checks }}
-        workflow_dir:    ${{ inputs.workflow_dir }}
+        action_yml_path:         ${{ inputs.action_yml_path }}
+        fail_on_warning:         ${{ inputs.fail_on_warning }}
+        skip_checks:             ${{ inputs.skip_checks }}
+        workflow_dir:            ${{ inputs.workflow_dir }}
+        github_token:            ${{ inputs.github_token }}
+        org_health_repo:         ${{ inputs.org_health_repo }}
+        check_org_health:        ${{ inputs.check_org_health }}
+        require_security:        ${{ inputs.require_security }}
+        require_code_of_conduct: ${{ inputs.require_code_of_conduct }}
+        require_contributing:    ${{ inputs.require_contributing }}
+        require_support:         ${{ inputs.require_support }}
+        require_issue_templates: ${{ inputs.require_issue_templates }}
+        require_pr_template:     ${{ inputs.require_pr_template }}
+        require_funding:         ${{ inputs.require_funding }}

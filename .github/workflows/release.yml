@@ -6,15 +6,14 @@
 # workflows on the default branch).
 #
 # Pipeline:
-#   1. validate — fail fast on bad version inputs
-#   2. promote  — `./.github/actions/promote` allowlists files from
+#   1. promote  — `./.github/actions/promote` allowlists files from
 #                 dev -> main, hard-blocks `.github/workflows/**`,
-#                 tags main with `vX.Y.Z`
-#   3. release  — `gh release create` inline against the new tag
+#                 validates the SemVer tag, tags main with `vX.Y.Z`.
+#   2. release  — `gh release create` inline against the new tag.
 #
-# Trigger: `workflow_dispatch` (operator types the version) or a
-# `push` of a `vX.Y.Z` tag on dev. We support both because some teams
-# tag-on-dev-first.
+# Trigger: `workflow_dispatch` only (operator types the version).
+# The promote action validates SemVer itself; no separate validate
+# job is needed.
 #
 # Marketplace listing: once main has `action.yml` + branding + tag,
 # https://github.com/marketplace/actions/<slug> goes live.
@@ -42,6 +41,13 @@ name: release
         required: false
         type: boolean
         default: false
+      update_major_tag:
+        description: >-
+          Move (force-push) the floating major tag (e.g. `v1`) to
+          point at the new release. Standard Marketplace convention.
+        required: false
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -51,25 +57,8 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  validate:
-    name: Validate inputs
-    runs-on: ubuntu-latest
-    timeout-minutes: 2
-    steps:
-      - name: SemVer check
-        env:
-          TAG: ${{ inputs.tag_name }}
-        run: |
-          set -euo pipefail
-          if ! printf '%s' "${TAG}" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.+-]+)?$'; then
-            echo "::error::tag_name '${TAG}' is not SemVer (expected vX.Y.Z[-suffix])"
-            exit 1
-          fi
-          echo "Tag '${TAG}' is valid."
-
   promote:
     name: Promote dev -> main
-    needs: validate
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -94,6 +83,7 @@ jobs:
         with:
           source_branch: dev
           target_branch: main
+          update_major_tag: ${{ inputs.update_major_tag }}
           # The Marketplace-facing surface on `main`. Everything else
           # (workflows, tests, scripts, src/, docs/) stays on `dev`.
           allowlist_paths: |
@@ -103,6 +93,7 @@ jobs:
             README.md
             SECURITY.md
             CODE_OF_CONDUCT.md
+            .github/actions/_lib
             .github/actions/check
             .github/actions/guard
             .github/actions/promote

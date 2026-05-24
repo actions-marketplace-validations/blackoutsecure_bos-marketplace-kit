@@ -7,7 +7,7 @@
 #
 # Pipeline:
 #   1. validate — fail fast on bad version inputs
-#   2. promote  — `./.github/actions/promote` allowlists files from
+#   2. promote  — `./actions/promote` allowlists files from
 #                 dev -> main, hard-blocks `.github/workflows/**`,
 #                 tags main with `vX.Y.Z`
 #   3. release  — `gh release create` inline against the new tag
@@ -90,7 +90,7 @@ jobs:
           persist-credentials: true
 
       - id: promote
-        uses: ./.github/actions/promote
+        uses: ./actions/promote
         with:
           source_branch: dev
           target_branch: main
@@ -103,11 +103,11 @@ jobs:
             README.md
             SECURITY.md
             CODE_OF_CONDUCT.md
-            .github/actions/check
-            .github/actions/guard
-            .github/actions/promote
-            .github/actions/name-check
-            .github/actions/branding-preview
+            actions/check
+            actions/guard
+            actions/promote
+            actions/name-check
+            actions/branding-preview
           extra_allowlist_paths: |
             .github/dependabot.yml
             .github/FUNDING.yml

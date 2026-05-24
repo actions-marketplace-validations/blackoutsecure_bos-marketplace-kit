@@ -284,10 +284,16 @@ runs:
         fi
 
         # ----- OP001: composite actions use `set -euo pipefail` ------------
-        # Scan every action.yml under .github/actions for a `using: composite`
-        # whose run blocks lack the standard hardening header.
+        # Scan every action.yml under actions/ (preferred) AND
+        # .github/actions/ (legacy / dev-only CI helpers) for a
+        # `using: composite` whose run blocks lack the standard
+        # hardening header.
         WEAK_COMPOSITES=""
-        if [ -d .github/actions ]; then
+        SCAN_DIRS=""
+        [ -d actions ] && SCAN_DIRS="${SCAN_DIRS} actions"
+        [ -d .github/actions ] && SCAN_DIRS="${SCAN_DIRS} .github/actions"
+        if [ -n "${SCAN_DIRS}" ]; then
+          # shellcheck disable=SC2086
           while IFS= read -r f; do
             [ -z "${f}" ] && continue
             # Crude but effective: if the file declares using: composite
@@ -298,7 +304,7 @@ runs:
                 WEAK_COMPOSITES="${WEAK_COMPOSITES}${f}\n"
               fi
             fi
-          done < <(find .github/actions -maxdepth 3 -type f \( -name 'action.yml' -o -name 'action.yaml' \) 2>/dev/null)
+          done < <(find ${SCAN_DIRS} -maxdepth 3 -type f \( -name 'action.yml' -o -name 'action.yaml' \) 2>/dev/null)
         fi
         if [ -n "${WEAK_COMPOSITES}" ]; then
           record OP001 warn "$(printf 'composite action(s) missing `set -euo pipefail`:\n%b' "${WEAK_COMPOSITES}" | tr '\n' ' ')"
@@ -337,7 +343,11 @@ runs:
         # surface. Inputs should be plumbed via `env:` so the runner
         # quotes them.
         UNSAFE_INTERP=""
-        if [ -d .github/actions ]; then
+        SCAN_DIRS=""
+        [ -d actions ] && SCAN_DIRS="${SCAN_DIRS} actions"
+        [ -d .github/actions ] && SCAN_DIRS="${SCAN_DIRS} .github/actions"
+        if [ -n "${SCAN_DIRS}" ]; then
+          # shellcheck disable=SC2086
           while IFS= read -r f; do
             [ -z "${f}" ] && continue
             if grep -qE '^[[:space:]]*using:[[:space:]]*composite' "${f}"; then
@@ -352,7 +362,7 @@ runs:
                 UNSAFE_INTERP="${UNSAFE_INTERP}${f}\n"
               fi
             fi
-          done < <(find .github/actions -maxdepth 3 -type f \( -name 'action.yml' -o -name 'action.yaml' \) 2>/dev/null)
+          done < <(find ${SCAN_DIRS} -maxdepth 3 -type f \( -name 'action.yml' -o -name 'action.yaml' \) 2>/dev/null)
         fi
         if [ -n "${UNSAFE_INTERP}" ]; then
           record SC001 fail "$(printf 'composite action(s) interpolate `inputs.*` or `github.event.*` directly inside `run:` (shell injection surface — plumb via `env:` instead):\n%b' "${UNSAFE_INTERP}" | tr '\n' ' ')"

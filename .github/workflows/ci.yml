@@ -86,7 +86,7 @@ jobs:
           # shellcheck disable=SC2064
           trap "rm -rf '${tmp}'" EXIT
 
-          find .github/actions action.yml -type f \( -name 'action.yml' -o -name 'action.yaml' \) 2>/dev/null | sort -u | while IFS= read -r f; do
+          find actions action.yml -type f \( -name 'action.yml' -o -name 'action.yaml' \) 2>/dev/null | sort -u | while IFS= read -r f; do
             [ -z "${f}" ] && continue
             n=$(yq -r '.runs.steps | length // 0' "${f}")
             [ "${n}" = "0" ] && continue

@@ -85,7 +85,7 @@ no other names.
 ## MP007 — `action.yml` lives at the repo root
 
 Marketplace ONLY detects a single manifest at the root of the default
-branch. Subdirectory manifests (e.g. `.github/actions/foo/action.yml`)
+branch. Subdirectory manifests (e.g. `actions/foo/action.yml`)
 are NOT listable on Marketplace.
 
 **Fix:** Move the manifest you want to publish to the repo root. The
@@ -182,7 +182,7 @@ and recommends the safer `env:` block forwarding.
 
 Open a PR against `dev` that:
 
-1. Adds the rule to `.github/actions/check/action.yml`.
+1. Adds the rule to `actions/check/action.yml`.
 2. Documents it here with a stable ID.
 3. Adds a unit test under `tests/` covering the failure case.
 4. Bumps the kit's minor version.

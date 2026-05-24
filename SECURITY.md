@@ -31,7 +31,7 @@ issues (CVSS ≥ 9.0) will be addressed faster.
 
 In scope:
 
-* The composite actions under `.github/actions/**`.
+* The composite actions under `actions/**`.
 * The Python CLI under `src/marketplace_kit/**`.
 * The reusable workflows under `.github/workflows/**`.
 * The bootstrap scripts under `scripts/**`.

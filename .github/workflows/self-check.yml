@@ -34,6 +34,15 @@ jobs:
         with:
           action_yml_path: action.yml
           fail_on_warning: 'true'
+          # Org-aware community-health lookup. The token is read-only
+          # for the org `.github` repo metadata + contents endpoint.
+          github_token: ${{ github.token }}
+          # `org_health_repo` defaults to `${owner}/.github` when empty.
+          # require_security / require_code_of_conduct / require_contributing
+          # default to `warn`; SUPPORT / issue / PR / FUNDING default to `skip`.
+          require_security:        warn
+          require_code_of_conduct: warn
+          require_contributing:    warn
       - name: Show outputs
         if: always()
         env:

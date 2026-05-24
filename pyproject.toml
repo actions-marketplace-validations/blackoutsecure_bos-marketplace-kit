@@ -41,3 +41,16 @@ Source = "https://github.com/blackoutsecure/bos-marketplace-kit"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/marketplace_kit"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/marketplace_kit/data/policies" = "marketplace_kit/data/policies"
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/marketplace_kit",
+    "README.md",
+    "LICENSE",
+    "NOTICE",
+    "pyproject.toml",
+    "tests",
+]

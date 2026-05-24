@@ -1,0 +1,20 @@
+# Funding configuration for `{{project_name}}`.
+#
+# Uncomment and fill in the platforms you actually use. GitHub
+# surfaces this as the "Sponsor" button on the repository.
+#
+# Docs: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/displaying-a-sponsor-button-in-your-repository
+
+# github: ["{{owner}}"]
+# patreon: your-handle
+# open_collective: your-collective
+# ko_fi: your-handle
+# tidelift: npm/your-package
+# community_bridge: your-project
+# liberapay: your-handle
+# issuehunt: your-handle
+# lfx_crowdfunding: your-handle
+# polar: your-handle
+# buy_me_a_coffee: your-handle
+# thanks_dev: your-handle
+# custom: ["https://example.com/donate"]

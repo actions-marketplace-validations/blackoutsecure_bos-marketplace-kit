@@ -6,9 +6,10 @@ implementation deliberately small — the canonical enforcement lives
 in the composites; this CLI is a developer ergonomics layer.
 
 Subcommands:
-    check        — validate `action.yml` against MP###/OP###/SC### rules
-    name-check   — verify the Marketplace name is available
-    version      — print version info
+    check            — validate `action.yml` against MP###/OP###/SC### rules
+    name-check       — verify the Marketplace name is available
+    generate-policy  — emit a community-health policy file from a template
+    version          — print version info
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ import argparse
 import re
 import sys
 import urllib.request
+from importlib import resources
 from pathlib import Path
 from typing import NamedTuple
 
@@ -299,6 +301,96 @@ def cmd_version(_args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Subcommand: generate-policy
+# ---------------------------------------------------------------------------
+
+# Map of `--kind` argument → (template_file, default_output_path,
+# pretty_label_for_messages).
+POLICY_KINDS: dict[str, tuple[str, str, str]] = {
+    "security":         ("security.md",                 "SECURITY.md",                              "Security policy"),
+    "code-of-conduct":  ("code-of-conduct.md",          "CODE_OF_CONDUCT.md",                       "Code of Conduct"),
+    "contributing":     ("contributing.md",             "CONTRIBUTING.md",                          "Contributing guide"),
+    "support":          ("support.md",                  "SUPPORT.md",                               "Support guide"),
+    "issue-bug":        ("issue-template-bug.md",       ".github/ISSUE_TEMPLATE/bug_report.md",       "Bug-report issue template"),
+    "issue-feature":    ("issue-template-feature.md",   ".github/ISSUE_TEMPLATE/feature_request.md", "Feature-request issue template"),
+    "pr-template":      ("pull-request-template.md",    ".github/PULL_REQUEST_TEMPLATE.md",          "Pull-request template"),
+    "funding":          ("funding.yml",                 ".github/FUNDING.yml",                       "Funding manifest"),
+}
+
+
+def _load_template(template_file: str) -> str:
+    """Read a policy template from the package data."""
+    try:
+        # Python 3.9+ resources API.
+        return resources.files("marketplace_kit.data.policies").joinpath(template_file).read_text(encoding="utf-8")
+    except (FileNotFoundError, ModuleNotFoundError) as exc:
+        sys.stderr.write(f"error: missing policy template {template_file!r}: {exc}\n")
+        raise SystemExit(2)
+
+
+def _render_template(text: str, *, owner: str, repo_name: str, contact_email: str, project_name: str) -> str:
+    """Substitute `{{placeholder}}` markers. Pure string replace — no
+    fancy templating engine, no external dependency."""
+    return (
+        text
+        .replace("{{owner}}", owner)
+        .replace("{{repo_name}}", repo_name)
+        .replace("{{contact_email}}", contact_email)
+        .replace("{{project_name}}", project_name)
+    )
+
+
+def cmd_generate_policy(args: argparse.Namespace) -> int:
+    kind = args.kind
+    if kind == "list":
+        for k, (_, default_out, label) in sorted(POLICY_KINDS.items()):
+            print(f"  {k:<18} {label:<35} -> {default_out}")
+        return 0
+
+    if kind not in POLICY_KINDS:
+        sys.stderr.write(
+            f"error: unknown kind {kind!r}. Choices: {sorted(POLICY_KINDS)} or 'list'.\n"
+        )
+        return 2
+
+    template_file, default_out, label = POLICY_KINDS[kind]
+    text = _load_template(template_file)
+
+    repo_name = args.repo or Path.cwd().name
+    project_name = args.project_name or repo_name
+    rendered = _render_template(
+        text,
+        owner=args.owner or "YOUR-ORG",
+        repo_name=repo_name,
+        contact_email=args.email or "security@example.com",
+        project_name=project_name,
+    )
+
+    if args.ai:
+        sys.stderr.write(
+            "note: --ai is not yet implemented. Falling back to the static template.\n"
+            "      Track progress: https://github.com/blackoutsecure/bos-marketplace-kit/issues\n"
+        )
+
+    if args.stdout:
+        sys.stdout.write(rendered)
+        return 0
+
+    out_path = Path(args.output) if args.output else Path(default_out)
+    if out_path.exists() and not args.force:
+        sys.stderr.write(
+            f"error: {out_path} already exists. Use --force to overwrite, "
+            "--stdout to print, or --output to choose a different path.\n"
+        )
+        return 2
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(rendered, encoding="utf-8")
+    sys.stderr.write(f"wrote {label} → {out_path} ({len(rendered)} bytes)\n")
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -325,6 +417,27 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Do not exit non-zero on collision (warnings only).",
     )
     p_nc.set_defaults(func=cmd_name_check, fail_on_collision=True)
+
+    p_gp = sub.add_parser(
+        "generate-policy",
+        help="Emit a community-health policy file (SECURITY.md, CODE_OF_CONDUCT.md, …) from a template.",
+    )
+    p_gp.add_argument(
+        "kind",
+        help=(
+            "Policy kind. Use 'list' to enumerate available kinds. "
+            "Choices: " + ", ".join(sorted(POLICY_KINDS)) + ", list."
+        ),
+    )
+    p_gp.add_argument("--owner", default=None, help="Org / user slug to substitute for {{owner}}.")
+    p_gp.add_argument("--repo", default=None, help="Repository name to substitute for {{repo_name}}. Defaults to CWD basename.")
+    p_gp.add_argument("--project-name", default=None, help="Human-readable project name (defaults to --repo).")
+    p_gp.add_argument("--email", default=None, help="Contact email to substitute for {{contact_email}}.")
+    p_gp.add_argument("--output", "-o", default=None, help="Path to write to. Defaults to the canonical location for this kind.")
+    p_gp.add_argument("--stdout", action="store_true", help="Print to stdout instead of writing a file.")
+    p_gp.add_argument("--force", "-f", action="store_true", help="Overwrite the output file if it already exists.")
+    p_gp.add_argument("--ai", action="store_true", help="(Future) ask an AI to draft the policy instead of using the static template.")
+    p_gp.set_defaults(func=cmd_generate_policy)
 
     p_v = sub.add_parser("version", help="Print version and exit.")
     p_v.set_defaults(func=cmd_version)

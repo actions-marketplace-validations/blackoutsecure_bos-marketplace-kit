@@ -157,24 +157,98 @@ Dependabot or `bos-upstream-watcher` to bump pins automatically.
 
 ---
 
-## SC003 — Outputs do not interpolate untrusted strings into shells
+## SC003 — Security policy is discoverable
 
-When a composite step's `run:` body references `${{ github.event.* }}`
-or `${{ inputs.* }}` directly, an attacker who controls those values
-can execute shell metacharacters. The kit's check flags this pattern
-and recommends the safer `env:` block forwarding.
+Public Marketplace listings should advertise a private reporting
+channel for security issues. The check looks for any of:
 
-**Fix:**
+* `SECURITY.md`, `.github/SECURITY.md`, or `docs/SECURITY.md` in the
+  calling repo,
+* the same files in the org's `.github` repository (when
+  `check_org_health: true` and a token is supplied), **or**
+* a README that mentions `security policy`, `SECURITY.md`, or
+  `report ... vulnerability`.
 
-```yaml
-# Bad
-- run: echo "${{ github.event.pull_request.title }}"
+The strictness is controlled by the `require_security` input:
 
-# Good
-- env:
-    PR_TITLE: ${{ github.event.pull_request.title }}
-  run: echo "${PR_TITLE}"
+| Value  | Behaviour on a missing policy                                                                     |
+|--------|---------------------------------------------------------------------------------------------------|
+| `fail` | Hard failure — the README escape hatch is also disabled at this level.                            |
+| `warn` | **Default.** Records a warning. The action overall still passes unless `fail_on_warning: true`.   |
+| `skip` | Rule short-circuits to a `skip` status — equivalent to listing `SC003` in `skip_checks`.          |
+
+**Generate a template:**
+
+```bash
+marketplace-kit generate-policy security \
+  --owner my-org --repo my-action --email security@example.com
 ```
+
+---
+
+## CH001-CH006 — Community-health files (org-aware)
+
+The kit checks a small set of community-health files Marketplace
+consumers expect to find on a popular public action. Each rule looks
+in this repo first; if the file is missing, it falls back to the
+org's `.github` repository (canonical home for shared defaults) when
+`check_org_health: true` and `github_token` is non-empty. If found in
+either location the rule passes; the report message records which
+location was used.
+
+| ID    | File                                                              | Default policy | Generator kind     |
+|-------|-------------------------------------------------------------------|----------------|--------------------|
+| CH001 | `CODE_OF_CONDUCT.md` (also `.github/`, `docs/`)                   | `warn`         | `code-of-conduct`  |
+| CH002 | `CONTRIBUTING.md` (also `.github/`, `docs/`)                      | `warn`         | `contributing`     |
+| CH003 | `SUPPORT.md` (also `.github/`, `docs/`)                           | `skip`         | `support`          |
+| CH004 | `.github/ISSUE_TEMPLATE/` directory or `.github/ISSUE_TEMPLATE.md` | `skip`         | `issue-bug` / `issue-feature` |
+| CH005 | `.github/PULL_REQUEST_TEMPLATE.md`                                | `skip`         | `pr-template`      |
+| CH006 | `.github/FUNDING.yml`                                             | `skip`         | `funding`          |
+
+Each rule takes a matching `require_*` input (`require_code_of_conduct`,
+`require_contributing`, `require_support`, `require_issue_templates`,
+`require_pr_template`, `require_funding`) with values `fail | warn |
+skip` and the same semantics as `require_security` above.
+
+### Org-aware lookup
+
+Set `check_org_health: true` (default) and pass `github_token:
+${{ github.token }}` to enable the org-wide fallback. The check
+makes at most:
+
+* **one** `GET /repos/{owner}/.github` call to confirm the org
+  health repo exists, and
+* **one** `GET /repos/{owner}/.github/contents/{path}` per missing
+  file (so 0-6 additional cheap API calls per run).
+
+Override the destination repo with `org_health_repo: my-org/.github`
+if your org uses a non-default location.
+
+### Generate a starter template
+
+The kit ships a small, opinionated set of policy templates and a CLI
+to emit them with placeholder substitution:
+
+```bash
+# List available kinds.
+marketplace-kit generate-policy list
+
+# Emit to the canonical path.
+marketplace-kit generate-policy code-of-conduct \
+  --owner my-org --repo my-action --email contact@example.com
+
+# Or just print to stdout.
+marketplace-kit generate-policy contributing --stdout
+```
+
+Placeholders: `{{owner}}`, `{{repo_name}}`, `{{contact_email}}`,
+`{{project_name}}`. Unsubstituted placeholders fall back to
+conservative defaults (`YOUR-ORG`, CWD basename,
+`security@example.com`).
+
+The `--ai` flag is reserved for a future iteration that drafts the
+policy using a language model; today it falls back to the static
+template and prints a notice.
 
 ---
 

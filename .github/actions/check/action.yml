@@ -61,6 +61,67 @@ inputs:
     required: false
     default: '.github/workflows'
 
+  # ----- Community-health (CH###) options ----------------------------------
+  # Each `require_*` input takes one of:
+  #   * `fail` -- missing the file is a hard failure.
+  #   * `warn` -- missing the file produces a warning (default for the
+  #     policy files that public Marketplace listings benefit from).
+  #   * `skip` -- never check this file (acts the same as listing the
+  #     rule in `skip_checks`).
+  # The check action looks in this repo first, then -- if
+  # `check_org_health` is true and `github_token` is non-empty -- in
+  # the org's `.github` repository (canonical home for shared
+  # community-health defaults).
+  github_token:
+    description: >-
+      Token used for the org `.github` repo lookup. Pass
+      `${{ github.token }}` from the calling workflow. If empty, the
+      org-health lookup is skipped (CH/SC rules fall back to local-only
+      detection and apply their `require_*` policy on missing files).
+    required: false
+    default: ''
+  org_health_repo:
+    description: >-
+      `owner/.github` repository that holds the org's shared
+      community-health defaults. Defaults to `${{ github.repository_owner }}/.github`
+      when the calling workflow does not override.
+    required: false
+    default: ''
+  check_org_health:
+    description: >-
+      `true` to consult the org `.github` repo for community-health
+      files. `false` to check only the current repo. Default `true`.
+    required: false
+    default: 'true'
+  require_security:
+    description: 'Policy for SECURITY.md (SC003). One of `fail`, `warn`, `skip`. Default `warn`.'
+    required: false
+    default: 'warn'
+  require_code_of_conduct:
+    description: 'Policy for CODE_OF_CONDUCT.md (CH001). One of `fail`, `warn`, `skip`. Default `warn`.'
+    required: false
+    default: 'warn'
+  require_contributing:
+    description: 'Policy for CONTRIBUTING.md (CH002). One of `fail`, `warn`, `skip`. Default `warn`.'
+    required: false
+    default: 'warn'
+  require_support:
+    description: 'Policy for SUPPORT.md (CH003). One of `fail`, `warn`, `skip`. Default `skip`.'
+    required: false
+    default: 'skip'
+  require_issue_templates:
+    description: 'Policy for issue templates (CH004). One of `fail`, `warn`, `skip`. Default `skip`.'
+    required: false
+    default: 'skip'
+  require_pr_template:
+    description: 'Policy for PR template (CH005). One of `fail`, `warn`, `skip`. Default `skip`.'
+    required: false
+    default: 'skip'
+  require_funding:
+    description: 'Policy for FUNDING.yml (CH006). One of `fail`, `warn`, `skip`. Default `skip`.'
+    required: false
+    default: 'skip'
+
 outputs:
   passed:
     description: 'Number of checks that passed.'
@@ -110,10 +171,21 @@ runs:
     - id: run
       shell: bash
       env:
-        ACTION_YML_PATH: ${{ inputs.action_yml_path }}
-        FAIL_ON_WARN:    ${{ inputs.fail_on_warning }}
-        SKIP_CHECKS:     ${{ inputs.skip_checks }}
-        WORKFLOW_DIR:    ${{ inputs.workflow_dir }}
+        ACTION_YML_PATH:     ${{ inputs.action_yml_path }}
+        FAIL_ON_WARN:        ${{ inputs.fail_on_warning }}
+        SKIP_CHECKS:         ${{ inputs.skip_checks }}
+        WORKFLOW_DIR:        ${{ inputs.workflow_dir }}
+        GH_TOKEN:            ${{ inputs.github_token }}
+        ORG_HEALTH_REPO_IN:  ${{ inputs.org_health_repo }}
+        REPO_OWNER:          ${{ github.repository_owner }}
+        CHECK_ORG_HEALTH:    ${{ inputs.check_org_health }}
+        REQ_SECURITY:        ${{ inputs.require_security }}
+        REQ_CODE_OF_CONDUCT: ${{ inputs.require_code_of_conduct }}
+        REQ_CONTRIBUTING:    ${{ inputs.require_contributing }}
+        REQ_SUPPORT:         ${{ inputs.require_support }}
+        REQ_ISSUE_TEMPLATES: ${{ inputs.require_issue_templates }}
+        REQ_PR_TEMPLATE:     ${{ inputs.require_pr_template }}
+        REQ_FUNDING:         ${{ inputs.require_funding }}
       run: |
         set -euo pipefail
 
@@ -155,6 +227,112 @@ runs:
           fi
           printf '%s|%s|%s\n' "${id}" "${status}" "${msg}" >> "${REPORT_FILE}"
         }
+
+        # ----- Validate require_* inputs + resolve org-health repo --------
+        validate_req() {
+          # Args: input_name, value
+          case "${2}" in
+            fail|warn|skip) ;;
+            *) die "${1} must be one of 'fail', 'warn', 'skip' (got: '${2}')" ;;
+          esac
+        }
+        validate_req require_security        "${REQ_SECURITY}"
+        validate_req require_code_of_conduct "${REQ_CODE_OF_CONDUCT}"
+        validate_req require_contributing    "${REQ_CONTRIBUTING}"
+        validate_req require_support         "${REQ_SUPPORT}"
+        validate_req require_issue_templates "${REQ_ISSUE_TEMPLATES}"
+        validate_req require_pr_template     "${REQ_PR_TEMPLATE}"
+        validate_req require_funding         "${REQ_FUNDING}"
+
+        case "${CHECK_ORG_HEALTH}" in
+          true|false) ;;
+          *) die "check_org_health must be 'true' or 'false' (got: '${CHECK_ORG_HEALTH}')" ;;
+        esac
+
+        # Resolve the org health repo. Workflow override wins; otherwise
+        # derive from REPO_OWNER. If both are empty we skip org-health.
+        ORG_HEALTH_REPO="${ORG_HEALTH_REPO_IN}"
+        if [ -z "${ORG_HEALTH_REPO}" ] && [ -n "${REPO_OWNER:-}" ]; then
+          ORG_HEALTH_REPO="${REPO_OWNER}/.github"
+        fi
+
+        # ----- Org-health probe + lookup helpers --------------------------
+        # ORG_HEALTH_AVAILABLE values: true | false | unknown.
+        ORG_HEALTH_AVAILABLE="false"
+        if [ "${CHECK_ORG_HEALTH}" = "true" ] && [ -n "${ORG_HEALTH_REPO}" ] && [ -n "${GH_TOKEN}" ]; then
+          probe_status="$(curl -sS -o /dev/null -w '%{http_code}' \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${ORG_HEALTH_REPO}" 2>/dev/null || echo '000')"
+          case "${probe_status}" in
+            200)
+              ORG_HEALTH_AVAILABLE="true"
+              echo "org-health: ${ORG_HEALTH_REPO} present (HTTP 200)"
+              ;;
+            404)
+              echo "org-health: ${ORG_HEALTH_REPO} not present (HTTP 404) -- lookups will fall back to local-only"
+              ;;
+            *)
+              ORG_HEALTH_AVAILABLE="unknown"
+              echo "::warning::org-health: probe to ${ORG_HEALTH_REPO} returned HTTP ${probe_status} -- lookups will fall back to local-only"
+              ;;
+          esac
+        elif [ "${CHECK_ORG_HEALTH}" = "true" ] && [ -z "${GH_TOKEN}" ]; then
+          echo "org-health: no github_token provided -- checks will run against the local repo only"
+        fi
+
+        gh_api_file_exists() {
+          # Returns 0 if the given path exists in ORG_HEALTH_REPO.
+          local path="$1"
+          [ "${ORG_HEALTH_AVAILABLE}" = "true" ] || return 1
+          local status
+          status="$(curl -sS -o /dev/null -w '%{http_code}' \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${ORG_HEALTH_REPO}/contents/${path}" 2>/dev/null || echo '000')"
+          [ "${status}" = "200" ]
+        }
+
+        check_health_file() {
+          # Args: rule_id, label, requirement, generate_kind, file1 [file2 ...]
+          local id="$1" label="$2" req="$3" gen_kind="$4"
+          shift 4
+          local files=("$@")
+
+          if [ "${req}" = "skip" ]; then
+            record "${id}" skip "${label} check disabled via require_* input"
+            return
+          fi
+
+          local f
+          for f in "${files[@]}"; do
+            if [ -e "${f}" ]; then
+              record "${id}" pass "${label} present at \`${f}\`"
+              return
+            fi
+          done
+
+          if [ "${ORG_HEALTH_AVAILABLE}" = "true" ]; then
+            for f in "${files[@]}"; do
+              if gh_api_file_exists "${f}"; then
+                record "${id}" pass "${label} inherited from \`${ORG_HEALTH_REPO}\` (\`${f}\`)"
+                return
+              fi
+            done
+          fi
+
+          local hint=""
+          if [ -n "${gen_kind}" ]; then
+            hint=" -- run \`marketplace-kit generate-policy ${gen_kind}\` for a starter template, or add the file to \`${ORG_HEALTH_REPO}\` for org-wide coverage"
+          fi
+          case "${req}" in
+            fail) record "${id}" fail "${label} missing in this repo and in \`${ORG_HEALTH_REPO}\`${hint}" ;;
+            warn) record "${id}" warn "${label} missing in this repo and in \`${ORG_HEALTH_REPO}\`${hint}" ;;
+          esac
+        }
+
 
         # ----- MP001: action.yml present at root ---------------------------
         ROOT_YML=''
@@ -370,18 +548,44 @@ runs:
           record SC001 pass "no direct \${{ inputs.* }} / \${{ github.event.* }} interpolation in composite run blocks"
         fi
 
-        # ----- SC003: SECURITY.md or security policy link in README --------
-        SECURITY_OK=false
-        if [ -f SECURITY.md ] || [ -f .github/SECURITY.md ]; then
-          SECURITY_OK=true
-        elif [ -n "${README_FILE}" ] && grep -qiE 'security policy|SECURITY\.md|report.*vulnerability' "${README_FILE}"; then
-          SECURITY_OK=true
+        # ----- SC003: SECURITY.md (org-aware) ------------------------------
+        # README escape hatch: a README that points readers to a private
+        # reporting process satisfies SC003 without hitting the org probe.
+        SECURITY_HINT_OK=false
+        if [ -n "${README_FILE}" ] && grep -qiE 'security policy|SECURITY\.md|report.*vulnerability' "${README_FILE}"; then
+          SECURITY_HINT_OK=true
         fi
-        if "${SECURITY_OK}"; then
-          record SC003 pass "security policy is discoverable"
+        if "${SECURITY_HINT_OK}" && [ "${REQ_SECURITY}" != "fail" ]; then
+          record SC003 pass "security policy is discoverable (README mentions reporting)"
         else
-          record SC003 warn "no SECURITY.md and no security reference in README — public Marketplace listings should advertise a reporting channel"
+          check_health_file SC003 "SECURITY.md (security policy)" "${REQ_SECURITY}" "security" \
+            "SECURITY.md" ".github/SECURITY.md" "docs/SECURITY.md"
         fi
+
+        # ----- CH001: CODE_OF_CONDUCT.md (org-aware) -----------------------
+        check_health_file CH001 "CODE_OF_CONDUCT.md (code of conduct)" "${REQ_CODE_OF_CONDUCT}" "code-of-conduct" \
+          "CODE_OF_CONDUCT.md" ".github/CODE_OF_CONDUCT.md" "docs/CODE_OF_CONDUCT.md"
+
+        # ----- CH002: CONTRIBUTING.md (org-aware) --------------------------
+        check_health_file CH002 "CONTRIBUTING.md (contributor guide)" "${REQ_CONTRIBUTING}" "contributing" \
+          "CONTRIBUTING.md" ".github/CONTRIBUTING.md" "docs/CONTRIBUTING.md"
+
+        # ----- CH003: SUPPORT.md (org-aware) -------------------------------
+        check_health_file CH003 "SUPPORT.md (support guide)" "${REQ_SUPPORT}" "support" \
+          "SUPPORT.md" ".github/SUPPORT.md" "docs/SUPPORT.md"
+
+        # ----- CH004: issue templates (org-aware) --------------------------
+        check_health_file CH004 "issue template(s)" "${REQ_ISSUE_TEMPLATES}" "issue-bug" \
+          ".github/ISSUE_TEMPLATE" ".github/ISSUE_TEMPLATE.md" "ISSUE_TEMPLATE.md"
+
+        # ----- CH005: pull-request template (org-aware) --------------------
+        check_health_file CH005 "pull-request template" "${REQ_PR_TEMPLATE}" "pr-template" \
+          ".github/PULL_REQUEST_TEMPLATE.md" "PULL_REQUEST_TEMPLATE.md" \
+          ".github/pull_request_template.md" "docs/PULL_REQUEST_TEMPLATE.md"
+
+        # ----- CH006: FUNDING.yml (org-aware) ------------------------------
+        check_health_file CH006 "FUNDING.yml" "${REQ_FUNDING}" "funding" \
+          ".github/FUNDING.yml" "FUNDING.yml"
 
         # ----- Aggregate + emit -------------------------------------------
         PASSED="$(awk -F'|' '$2=="pass"{n++} END{print n+0}' "${REPORT_FILE}")"

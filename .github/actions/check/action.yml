@@ -74,17 +74,19 @@ inputs:
   # community-health defaults).
   github_token:
     description: >-
-      Token used for the org `.github` repo lookup. Pass
-      `${{ github.token }}` from the calling workflow. If empty, the
-      org-health lookup is skipped (CH/SC rules fall back to local-only
-      detection and apply their `require_*` policy on missing files).
+      Token used for the org `.github` repo lookup. Pass the
+      calling workflow's `github.token` (the built-in `GITHUB_TOKEN`
+      is sufficient). If empty, the org-health lookup is skipped
+      and CH/SC rules fall back to local-only detection, applying
+      their `require_*` policy on missing files.
     required: false
     default: ''
   org_health_repo:
     description: >-
       `owner/.github` repository that holds the org's shared
-      community-health defaults. Defaults to `${{ github.repository_owner }}/.github`
-      when the calling workflow does not override.
+      community-health defaults. Defaults to
+      `<github.repository_owner>/.github` when the calling workflow
+      does not override.
     required: false
     default: ''
   check_org_health:

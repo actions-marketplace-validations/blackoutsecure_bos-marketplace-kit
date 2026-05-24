@@ -68,11 +68,12 @@ inputs:
 
   github_token:
     description: >-
-      Token used to call the REST API. For `check` mode the default
-      `${{ secrets.GITHUB_TOKEN }}` is sufficient. For `enforce` mode
-      the token MUST have `Administration: write` on the repository
-      (provide a fine-grained PAT or GitHub App token via
-      `${{ secrets.<NAME> }}`).
+      Token used to call the REST API. In `check` mode the default
+      workflow token (`secrets.GITHUB_TOKEN`) is sufficient. In
+      `enforce` mode the token MUST have `Administration: write`
+      on the repository -- provide a fine-grained PAT or GitHub
+      App installation token via `secrets.<NAME>` in the calling
+      workflow.
     required: true
 
   severity:

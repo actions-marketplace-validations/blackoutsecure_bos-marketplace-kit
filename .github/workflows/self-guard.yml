@@ -14,6 +14,15 @@
 # the diff codepath is skipped; the tree-state and required-paths
 # checks still run against the dispatched ref.
 #
+# `push:` triggers are intentionally absent. The guard's whole point
+# is to enforce Marketplace publishing constraints on the default
+# branch (`main`). Running it against `dev` is meaningless — `dev`
+# legitimately holds `.github/workflows/**` and other paths blocked
+# on `main`, so a push-to-dev run would always fail. Use the
+# pre-promote hook in `release.yml` (it invokes promote, which
+# already runs the same blocked/required-paths logic on the
+# allowlisted tree) for the equivalent pre-release check.
+#
 # `schedule:` is intentionally absent (workflows aren't on `main`,
 # which is where GitHub looks for scheduled triggers).
 name: Self-guard · dogfood guard on PRs to main
@@ -21,8 +30,6 @@ name: Self-guard · dogfood guard on PRs to main
 "on":
   pull_request_target:
     branches: [main]
-  push:
-    branches: [dev]
   workflow_dispatch:
 
 permissions:

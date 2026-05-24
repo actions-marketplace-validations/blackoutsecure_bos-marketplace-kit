@@ -6,14 +6,21 @@
 # workflows on the default branch).
 #
 # Pipeline:
-#   1. promote  — `./.github/actions/promote` allowlists files from
-#                 dev -> main, hard-blocks `.github/workflows/**`,
-#                 validates the SemVer tag, tags main with `vX.Y.Z`.
-#   2. release  — `gh release create` inline against the new tag.
+#   1. preflight — confirms dev's HEAD passed every required CI
+#                  check before we promote. Cheap (one API call);
+#                  prevents shipping from a red SHA.
+#   2. compute-tag — if `bump` was used (patch/minor/major), reads
+#                  the latest `vX.Y.Z` tag and computes the next
+#                  one. Otherwise the operator-supplied `tag_name`
+#                  passes through unchanged. Exactly one of
+#                  {tag_name, bump != none} must be provided.
+#   3. promote   — `./.github/actions/promote` allowlists files
+#                  from dev -> main, hard-blocks `.github/workflows/**`,
+#                  validates the SemVer tag, tags main with `vX.Y.Z`.
+#   4. release   — `gh release create` inline against the new tag.
 #
-# Trigger: `workflow_dispatch` only (operator types the version).
-# The promote action validates SemVer itself; no separate validate
-# job is needed.
+# Trigger: `workflow_dispatch` only (operator types the version OR
+# picks a `bump` mode). The promote action validates SemVer itself.
 #
 # Marketplace listing: once main has `action.yml` + branding + tag,
 # https://github.com/marketplace/actions/<slug> goes live.
@@ -23,11 +30,27 @@ name: Release · promote dev → main + tag + publish
   workflow_dispatch:
     inputs:
       tag_name:
-        description: 'Tag to create on main (SemVer, e.g. `v1.0.0`).'
-        required: true
+        description: >-
+          Explicit tag to create on main (SemVer, e.g. `v1.0.0`).
+          Leave empty to auto-compute via `bump`.
+        required: false
         type: string
+        default: ''
+      bump:
+        description: >-
+          Auto-compute the next tag from the latest `vX.Y.Z` tag.
+          Ignored when `tag_name` is non-empty. Use `none` to require
+          an explicit `tag_name`.
+        required: false
+        type: choice
+        default: 'none'
+        options:
+          - none
+          - patch
+          - minor
+          - major
       release_name:
-        description: 'Release title (defaults to tag_name).'
+        description: 'Release title (defaults to the resolved tag).'
         required: false
         type: string
         default: ''
@@ -48,17 +71,226 @@ name: Release · promote dev → main + tag + publish
         required: false
         type: boolean
         default: true
+      skip_preflight:
+        description: >-
+          Ship from a red dev SHA. Off by default; flip only when
+          the failing check is genuinely irrelevant (e.g. an
+          external service outage). Documented in the release notes.
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
+# Group on workflow name (one release at a time globally), not on
+# tag_name — tag_name can be empty when `bump` is used and we need
+# the concurrency lock to bind regardless.
 concurrency:
-  group: release-${{ inputs.tag_name }}
+  group: release-${{ github.workflow }}
   cancel-in-progress: false
 
 jobs:
+  preflight:
+    name: Preflight · dev CI must be green
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      # `checks: read` for /commits/{sha}/check-runs.
+      contents: read
+      checks: read
+    outputs:
+      dev_sha: ${{ steps.gate.outputs.dev_sha }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: dev
+          fetch-depth: 1
+          persist-credentials: false
+      - id: gate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO:     ${{ github.repository }}
+          # The names of the checks that protected branches require
+          # on dev. Kept in lockstep with branch-protection-on-dev
+          # so a green dev SHA here always matches the protection
+          # rule. If you add a required check, add it BOTH to dev's
+          # branch protection AND to this list (and vice-versa).
+          REQUIRED_CHECKS: |
+            Python CLI (smoke + pytest)
+            Analyze (python)
+            Analyze (actions)
+            Lint markdown / yaml / shell / actions
+            Run check against own action.yml
+            Render branding preview
+            Verify branch protection on main
+          SKIP_PREFLIGHT: ${{ inputs.skip_preflight }}
+        run: |
+          set -euo pipefail
+          DEV_SHA="$(git rev-parse HEAD)"
+          echo "dev_sha=${DEV_SHA}" >> "${GITHUB_OUTPUT}"
+          echo "Dev HEAD: ${DEV_SHA}"
+
+          if [ "${SKIP_PREFLIGHT}" = "true" ]; then
+            echo "::warning::skip_preflight=true -- shipping from ${DEV_SHA} without verifying CI status. Document why in the release notes."
+            exit 0
+          fi
+
+          # Fetch all check-runs for the SHA. Paginate up to 100.
+          RAW="$(gh api \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "repos/${REPO}/commits/${DEV_SHA}/check-runs?per_page=100")"
+
+          fail=0
+          missing=0
+          while IFS= read -r required; do
+            [ -z "${required}" ] && continue
+            # Find the check by name; pick the most recent if there
+            # are multiple (rerun, matrix, etc.) — we want the last
+            # observed conclusion.
+            line="$(printf '%s' "${RAW}" | python3 -c '
+          import json, sys
+          name = sys.argv[1]
+          data = json.load(sys.stdin)
+          runs = [r for r in data.get("check_runs", []) if r.get("name") == name]
+          if not runs:
+              print("MISSING|||")
+              sys.exit(0)
+          runs.sort(key=lambda r: r.get("completed_at") or r.get("started_at") or "", reverse=True)
+          r = runs[0]
+          print(f"{r.get(\"status\",\"\")}|{r.get(\"conclusion\") or \"\"}|{r.get(\"html_url\",\"\")}")
+          ' "${required}")"
+            status="${line%%|*}"
+            rest="${line#*|}"
+            conclusion="${rest%%|*}"
+            url="${rest#*|}"
+
+            if [ "${status}" = "MISSING" ]; then
+              echo "::error::Required check '${required}' was NOT run on ${DEV_SHA}. Push a fresh commit to dev to trigger CI, then re-dispatch release."
+              missing=$((missing+1))
+              continue
+            fi
+            if [ "${status}" != "completed" ]; then
+              echo "::error::Required check '${required}' is ${status} on ${DEV_SHA} (not completed). Wait for CI to finish, then re-dispatch. ${url}"
+              fail=$((fail+1))
+              continue
+            fi
+            if [ "${conclusion}" != "success" ]; then
+              echo "::error::Required check '${required}' concluded '${conclusion}' on ${DEV_SHA} (must be 'success'). ${url}"
+              fail=$((fail+1))
+              continue
+            fi
+            echo "  ✓ ${required}"
+          done <<< "${REQUIRED_CHECKS}"
+
+          {
+            echo "## Preflight"
+            echo ""
+            echo "Dev SHA: \`${DEV_SHA}\`"
+            echo ""
+            if [ $((fail + missing)) -eq 0 ]; then
+              echo "All required checks passed."
+            else
+              echo "**Required checks failing:** ${fail} / **missing:** ${missing}"
+            fi
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+          if [ $((fail + missing)) -gt 0 ]; then
+            echo "::error::Preflight failed: ${fail} required check(s) not success, ${missing} not run. Set skip_preflight=true to override (document why in release notes)."
+            exit 1
+          fi
+
+  compute-tag:
+    name: Compute release tag
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      contents: read
+    outputs:
+      tag_name: ${{ steps.compute.outputs.tag_name }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # Need full tag history to find the latest vX.Y.Z.
+          ref: dev
+          fetch-depth: 0
+          persist-credentials: false
+      - id: compute
+        env:
+          INPUT_TAG_NAME: ${{ inputs.tag_name }}
+          INPUT_BUMP:     ${{ inputs.bump }}
+        run: |
+          set -euo pipefail
+
+          # Trim whitespace.
+          TAG="$(printf '%s' "${INPUT_TAG_NAME}" | tr -d '[:space:]')"
+          BUMP="${INPUT_BUMP:-none}"
+
+          if [ -n "${TAG}" ] && [ "${BUMP}" != "none" ]; then
+            echo "::error::Provide EITHER an explicit tag_name OR a bump mode, not both. Got tag_name='${TAG}' bump='${BUMP}'."
+            exit 1
+          fi
+
+          if [ -z "${TAG}" ] && [ "${BUMP}" = "none" ]; then
+            echo "::error::Either tag_name (explicit) or bump (patch/minor/major) must be provided."
+            exit 1
+          fi
+
+          if [ -n "${TAG}" ]; then
+            echo "Using explicit tag_name: ${TAG}"
+          else
+            # Find latest vX.Y.Z tag (ignore pre-release suffixes for
+            # the seed; the bump produces a clean release tag).
+            git fetch --tags --quiet || true
+            LATEST="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' \
+              | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+              | sort -V \
+              | tail -n1 || true)"
+            if [ -z "${LATEST}" ]; then
+              # First release: bump from v0.0.0.
+              LATEST="v0.0.0"
+              echo "No prior tags; seeding from v0.0.0."
+            else
+              echo "Latest tag: ${LATEST}"
+            fi
+            # Strip leading 'v'.
+            VERSION="${LATEST#v}"
+            MAJOR="${VERSION%%.*}"
+            REST="${VERSION#*.}"
+            MINOR="${REST%%.*}"
+            PATCH="${REST#*.}"
+            case "${BUMP}" in
+              patch) PATCH=$((PATCH + 1)) ;;
+              minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
+              major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
+              *)     echo "::error::Unknown bump mode '${BUMP}'."; exit 1 ;;
+            esac
+            TAG="v${MAJOR}.${MINOR}.${PATCH}"
+            echo "Computed tag (bump=${BUMP}): ${TAG}"
+          fi
+
+          # Refuse to overwrite an existing tag (matches promote
+          # composite's own guard but fail fast here for clarity).
+          if git rev-parse --verify --quiet "refs/tags/${TAG}" >/dev/null; then
+            echo "::error::Tag ${TAG} already exists locally. Pick a fresh tag or delete the old one if intentional."
+            exit 1
+          fi
+
+          echo "tag_name=${TAG}" >> "${GITHUB_OUTPUT}"
+          {
+            echo "## Tag resolution"
+            echo ""
+            echo "| Field      | Value |"
+            echo "|------------|-------|"
+            echo "| tag_name   | \`${TAG}\` |"
+            echo "| bump mode  | \`${BUMP}\` |"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
   promote:
     name: Promote dev -> main
+    needs: [preflight, compute-tag]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -118,8 +350,8 @@ jobs:
             .markdownlint.yaml
             .yamllint.yml
             .shellcheckrc
-          tag_name:       ${{ inputs.tag_name }}
-          commit_message: 'release: ${{ inputs.tag_name }}'
+          tag_name:       ${{ needs.compute-tag.outputs.tag_name }}
+          commit_message: 'release: ${{ needs.compute-tag.outputs.tag_name }}'
           dry_run:        ${{ inputs.dry_run }}
 
       - name: Job summary

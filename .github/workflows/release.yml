@@ -1,0 +1,197 @@
+# Marketplace-compliant release: promote `dev` -> `main` (allowlist),
+# tag the new main commit, and publish a GitHub Release.
+#
+# This is THE workflow that ships the kit. It runs on `dev` (the only
+# branch that holds workflows — Marketplace publishing prohibits
+# workflows on the default branch).
+#
+# Pipeline:
+#   1. validate — fail fast on bad version inputs
+#   2. promote  — `./.github/actions/promote` allowlists files from
+#                 dev -> main, hard-blocks `.github/workflows/**`,
+#                 tags main with `vX.Y.Z`
+#   3. release  — `gh release create` inline against the new tag
+#
+# Trigger: `workflow_dispatch` (operator types the version) or a
+# `push` of a `vX.Y.Z` tag on dev. We support both because some teams
+# tag-on-dev-first.
+#
+# Marketplace listing: once main has `action.yml` + branding + tag,
+# https://github.com/marketplace/actions/<slug> goes live.
+name: release
+
+"on":
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Tag to create on main (SemVer, e.g. `v1.0.0`).'
+        required: true
+        type: string
+      release_name:
+        description: 'Release title (defaults to tag_name).'
+        required: false
+        type: string
+        default: ''
+      dry_run:
+        description: 'Validate + stage diff but do not push or tag.'
+        required: false
+        type: boolean
+        default: false
+      release_draft:
+        description: 'Create the GitHub Release as draft.'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.tag_name }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate inputs
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: SemVer check
+        env:
+          TAG: ${{ inputs.tag_name }}
+        run: |
+          set -euo pipefail
+          if ! printf '%s' "${TAG}" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.+-]+)?$'; then
+            echo "::error::tag_name '${TAG}' is not SemVer (expected vX.Y.Z[-suffix])"
+            exit 1
+          fi
+          echo "Tag '${TAG}' is valid."
+
+  promote:
+    name: Promote dev -> main
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      # Required for the push of the promotion commit + tag.
+      contents: write
+    outputs:
+      target_sha:         ${{ steps.promote.outputs.target_sha }}
+      source_sha:         ${{ steps.promote.outputs.source_sha }}
+      tag_name:           ${{ steps.promote.outputs.tag_name }}
+      promoted:           ${{ steps.promote.outputs.promoted }}
+      removed_paths:      ${{ steps.promote.outputs.removed_paths }}
+      removed_violations: ${{ steps.promote.outputs.removed_violations }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: dev
+          fetch-depth: 0
+          persist-credentials: true
+
+      - id: promote
+        uses: ./.github/actions/promote
+        with:
+          source_branch: dev
+          target_branch: main
+          # The Marketplace-facing surface on `main`. Everything else
+          # (workflows, tests, scripts, src/, docs/) stays on `dev`.
+          allowlist_paths: |
+            action.yml
+            LICENSE
+            NOTICE
+            README.md
+            SECURITY.md
+            CODE_OF_CONDUCT.md
+            .github/actions/check
+            .github/actions/guard
+            .github/actions/promote
+            .github/actions/name-check
+            .github/actions/branding-preview
+          extra_allowlist_paths: |
+            .github/dependabot.yml
+            .github/FUNDING.yml
+          tag_name:       ${{ inputs.tag_name }}
+          commit_message: 'release: ${{ inputs.tag_name }}'
+          dry_run:        ${{ inputs.dry_run }}
+
+      - name: Job summary
+        if: always()
+        env:
+          PROMOTED:           ${{ steps.promote.outputs.promoted }}
+          SOURCE_SHA:         ${{ steps.promote.outputs.source_sha }}
+          TARGET_SHA:         ${{ steps.promote.outputs.target_sha }}
+          TAG_NAME:           ${{ steps.promote.outputs.tag_name }}
+          DRY_RUN:            ${{ inputs.dry_run }}
+          REMOVED_PATHS:      ${{ steps.promote.outputs.removed_paths }}
+          REMOVED_VIOLATIONS: ${{ steps.promote.outputs.removed_violations }}
+        run: |
+          {
+            echo "## Release promote"
+            echo ""
+            echo "| Field         | Value |"
+            echo "|---------------|-------|"
+            echo "| Source branch | \`dev\` |"
+            echo "| Target branch | \`main\` |"
+            echo "| Source SHA    | \`${SOURCE_SHA:-n/a}\` |"
+            echo "| Target SHA    | \`${TARGET_SHA:-n/a}\` |"
+            echo "| Tag           | \`${TAG_NAME}\` |"
+            echo "| Promoted      | \`${PROMOTED}\` |"
+            echo "| Dry run       | \`${DRY_RUN}\` |"
+            echo ""
+            if [ -n "${REMOVED_VIOLATIONS}" ]; then
+              echo "### Marketplace violations stripped"
+              echo ""
+              echo '```'
+              printf '%s\n' "${REMOVED_VIOLATIONS}"
+              echo '```'
+            fi
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+  release:
+    name: GitHub Release
+    needs: promote
+    if: ${{ needs.promote.outputs.promoted == 'true' && !inputs.dry_run }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # Check out the just-promoted target SHA so any release-notes
+          # artifacts read the post-promote tree.
+          ref: ${{ needs.promote.outputs.target_sha }}
+          persist-credentials: false
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG:      ${{ needs.promote.outputs.tag_name }}
+          NAME:     ${{ inputs.release_name }}
+          DRAFT:    ${{ inputs.release_draft }}
+          TARGET:   ${{ needs.promote.outputs.target_sha }}
+        run: |
+          set -euo pipefail
+
+          title="${NAME:-${TAG}}"
+
+          # Detect pre-release suffix (vX.Y.Z-rc.1, vX.Y.Z-beta, etc.)
+          prerelease_flag=""
+          case "${TAG}" in
+            *-*) prerelease_flag="--prerelease" ;;
+          esac
+
+          draft_flag=""
+          case "${DRAFT}" in
+            true) draft_flag="--draft" ;;
+          esac
+
+          # shellcheck disable=SC2086
+          gh release create "${TAG}" \
+            --target "${TARGET}" \
+            --title "${title}" \
+            --generate-notes \
+            ${prerelease_flag} ${draft_flag}
+
+          echo "Release created: ${TAG}"

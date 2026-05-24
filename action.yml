@@ -1,0 +1,65 @@
+name: BOS Marketplace Kit
+description: >-
+  Pre-publish validator for GitHub Marketplace Actions. Lints metadata,
+  branding, naming, and security defaults.
+author: BlackoutSecure
+
+branding:
+  icon: check-circle
+  color: blue
+
+# This root action is a thin delegate to .github/actions/check.
+# The kit's other tools (guard, promote, name-check, branding-preview)
+# are accessible at their respective sub-paths and via the reusable
+# workflows under .github/workflows/.
+#
+# Default surface choice rationale: a Marketplace listing for a kit
+# should expose ONE thing at its root URL. The lifecycle is:
+#
+#   1. `check`  — every PR. Static, fast, no auth. (this is root)
+#   2. `guard`  — every PR. Diff + tree state, no auth.
+#   3. `promote` — on release. Push perms required.
+#   4. `name-check`, `branding-preview` — opt-in, situational.
+
+inputs:
+  action_yml_path:
+    description: 'Path to the action manifest. Default `action.yml`.'
+    required: false
+    default: 'action.yml'
+  fail_on_warning:
+    description: '`true` to treat OP### warnings as failures.'
+    required: false
+    default: 'false'
+  skip_checks:
+    description: 'Comma-separated check IDs to skip (e.g. `OP003,SC002`).'
+    required: false
+    default: ''
+  workflow_dir:
+    description: 'Workflow directory to scan. Set "" to skip.'
+    required: false
+    default: '.github/workflows'
+
+outputs:
+  passed:
+    description: 'Number of checks that passed.'
+    value: ${{ steps.check.outputs.passed }}
+  failed:
+    description: 'Number of checks that failed.'
+    value: ${{ steps.check.outputs.failed }}
+  warnings:
+    description: 'Number of warnings.'
+    value: ${{ steps.check.outputs.warnings }}
+  report:
+    description: 'Newline-separated `id|status|message` rows.'
+    value: ${{ steps.check.outputs.report }}
+
+runs:
+  using: composite
+  steps:
+    - id: check
+      uses: ./.github/actions/check
+      with:
+        action_yml_path: ${{ inputs.action_yml_path }}
+        fail_on_warning: ${{ inputs.fail_on_warning }}
+        skip_checks:     ${{ inputs.skip_checks }}
+        workflow_dir:    ${{ inputs.workflow_dir }}

@@ -1,0 +1,65 @@
+# Self-dogfood: run the kit's own `guard` action on every PR
+# targeting `main`. Validates that the guard ITSELF doesn't regress
+# its own enforcement.
+#
+# This workflow uses `pull_request_target` (not `pull_request`)
+# because workflows MUST live on `dev` (Marketplace publishing
+# prohibits workflows on the default branch); a PR-base read on
+# `main` would find no workflows. See the guard composite's docstring
+# for the security analysis.
+name: self-guard
+
+"on":
+  pull_request_target:
+    branches: [main]
+  push:
+    branches: [dev]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: self-guard-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  guard:
+    name: Marketplace guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Resolve checkout ref
+        id: ref
+        env:
+          EVENT_NAME:  ${{ github.event_name }}
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          GITHUB_REF:  ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          if [ "${EVENT_NAME}" = "pull_request_target" ] && [ -n "${PR_BASE_REF}" ]; then
+            REF="${PR_BASE_REF}"
+          else
+            REF="${GITHUB_REF}"
+          fi
+          echo "ref=${REF}" >> "${GITHUB_OUTPUT}"
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ steps.ref.outputs.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - id: guard
+        uses: ./.github/actions/guard
+        with:
+          pr_base_sha:    ${{ github.event.pull_request.base.sha }}
+          pr_head_sha:    ${{ github.event.pull_request.head.sha }}
+          check_pr_diff:  ${{ github.event_name == 'pull_request_target' }}
+          check_tree_state: 'true'
+          require_action_yml: 'true'
+          blocked_paths: |
+            .github/workflows/
+          required_paths: |
+            action.yml
+            LICENSE
+            README.md

@@ -1,0 +1,25 @@
+NOTICE
+
+bos-marketplace-kit
+Copyright (c) 2026 BlackoutSecure
+
+This product includes software developed by BlackoutSecure
+(https://github.com/blackoutsecure).
+
+This product is designed to be used alongside, and recommends consumers run,
+the following third-party tools (each under its own license):
+
+  * actionlint by Linda Cabezas (rhysd)
+    https://github.com/rhysd/actionlint   (MIT License)
+
+  * action-validator by Matt Palmer (mpalmer)
+    https://github.com/mpalmer/action-validator   (GPL-3.0)
+
+  * SchemaStore github-action.json schema
+    https://github.com/SchemaStore/schemastore   (Apache-2.0)
+
+  * Feather icon set (used by GitHub Marketplace branding)
+    https://github.com/feathericons/feather   (MIT License)
+
+None of the above are bundled in this repository. References are pinned by
+commit SHA when invoked from workflows.

@@ -1,0 +1,159 @@
+name: Marketplace branding preview
+description: >-
+  Render an SVG preview of how a GitHub Marketplace Action card will
+  display its branding (Feather icon on the chosen colour
+  background), and upload it as a build artifact.
+
+  Part of the `bos-marketplace-kit` toolkit. Marketplace listings show
+  the icon + colour pair prominently — but the editing experience for
+  branding is "edit `action.yml`, push, hope". This action closes the
+  loop by rendering the actual SVG so reviewers can see the listing
+  appearance in the PR.
+
+  Mechanics:
+    1. Parse `branding.icon` and `branding.color` from the manifest.
+    2. Fetch the icon SVG from the Feather icon set (pinned by ref).
+    3. Compose a 256x256 card matching Marketplace's visual style.
+    4. Write to `${RUNNER_TEMP}/marketplace-card.svg` and emit a
+       `card_path` output. Caller can upload as artifact or post as
+       PR comment image.
+
+  Does NOT validate that the icon/colour pair is allowed — use the
+  kit's `check` action for that (delegates to actionlint).
+
+inputs:
+  action_yml_path:
+    description: 'Path to the action manifest. Default `action.yml`.'
+    required: false
+    default: 'action.yml'
+  output_path:
+    description: >-
+      Where to write the rendered SVG. Default
+      `${RUNNER_TEMP}/marketplace-card.svg` (so callers can upload it
+      as an artifact without managing the path).
+    required: false
+    default: ''
+  feather_ref:
+    description: >-
+      Git ref of the feathericons/feather repository to fetch icons
+      from. Default `v4.28.0` — the snapshot that GitHub Marketplace
+      uses. Pinned to a release for reproducibility.
+    required: false
+    default: 'v4.28.0'
+
+outputs:
+  card_path:
+    description: 'Absolute path to the rendered SVG card.'
+    value: ${{ steps.run.outputs.card_path }}
+  icon:
+    description: 'The branding.icon value found in the manifest.'
+    value: ${{ steps.run.outputs.icon }}
+  color:
+    description: 'The branding.color value found in the manifest.'
+    value: ${{ steps.run.outputs.color }}
+
+runs:
+  using: composite
+  steps:
+    - id: run
+      shell: bash
+      env:
+        ACTION_YML_PATH: ${{ inputs.action_yml_path }}
+        OUTPUT_PATH:     ${{ inputs.output_path }}
+        FEATHER_REF:     ${{ inputs.feather_ref }}
+      run: |
+        set -euo pipefail
+
+        die() { echo "::error title=Marketplace branding preview::$*" >&2; exit 1; }
+
+        case "${ACTION_YML_PATH}" in
+          ''|/*|*..*) die "action_yml_path must be a non-empty, repo-relative path (got: '${ACTION_YML_PATH}')" ;;
+        esac
+        if [ ! -f "${ACTION_YML_PATH}" ]; then
+          die "manifest not found: ${ACTION_YML_PATH}"
+        fi
+
+        OUT_PATH="${OUTPUT_PATH:-${RUNNER_TEMP:-/tmp}/marketplace-card.svg}"
+
+        # ----- Extract branding via sibling helper script -----------------
+        # Helper lives next to this action.yml; called via
+        # GITHUB_ACTION_PATH so it works whether invoked locally or
+        # from a consumer's checkout.
+        BRANDING_META="$(python3 "${GITHUB_ACTION_PATH}/extract_branding.py" "${ACTION_YML_PATH}")"
+        # shellcheck disable=SC1090
+        eval "$(printf '%s\n' "${BRANDING_META}" | sed -E 's/^([A-Z_]+)=(.*)$/\1=\"\2\"/')"
+
+        if [ -z "${ICON:-}" ]; then
+          die "no branding.icon found in ${ACTION_YML_PATH}"
+        fi
+        if [ -z "${COLOR:-}" ]; then
+          die "no branding.color found in ${ACTION_YML_PATH}"
+        fi
+
+        # ----- Map color name to a hex value --------------------------------
+        # Approximate Marketplace's actual rendering colours. Not exact
+        # but close enough for a preview.
+        case "${COLOR}" in
+          white)     BG='#ffffff'; FG='#24292f' ;;
+          yellow)    BG='#dbab09'; FG='#ffffff' ;;
+          blue)      BG='#0366d6'; FG='#ffffff' ;;
+          green)     BG='#28a745'; FG='#ffffff' ;;
+          orange)    BG='#f66a0a'; FG='#ffffff' ;;
+          red)       BG='#d73a49'; FG='#ffffff' ;;
+          purple)    BG='#6f42c1'; FG='#ffffff' ;;
+          gray-dark) BG='#24292f'; FG='#ffffff' ;;
+          *) die "unsupported branding.color '${COLOR}'. Allowed: white, yellow, blue, green, orange, red, purple, gray-dark." ;;
+        esac
+
+        # ----- Fetch the icon SVG from feathericons/feather -----------------
+        ICON_URL="https://raw.githubusercontent.com/feathericons/feather/${FEATHER_REF}/icons/${ICON}.svg"
+        ICON_FILE="$(mktemp -t feather-XXXXXX.svg)"
+        # shellcheck disable=SC2064
+        trap "rm -f '${ICON_FILE}'" EXIT
+
+        if ! curl -fsSL --retry 3 --retry-delay 2 -o "${ICON_FILE}" "${ICON_URL}"; then
+          die "failed to fetch icon '${ICON}' from feather ${FEATHER_REF} — verify it exists at ${ICON_URL}"
+        fi
+
+        # The feather SVG uses currentColor for stroke; we extract the
+        # path bodies and re-wrap them in our card SVG with the right
+        # stroke colour.
+        INNER="$(awk '
+          /<svg/{found=1; next}
+          /<\/svg>/{found=0; next}
+          found{print}
+        ' "${ICON_FILE}" | tr -d '\n' | sed -E 's/[[:space:]]+/ /g')"
+
+        if [ -z "${INNER}" ]; then
+          die "feather icon body for '${ICON}' was empty — fetched file may be corrupt"
+        fi
+
+        # ----- Compose the card SVG ----------------------------------------
+        # Delegate SVG composition to a sibling helper script so the
+        # YAML stays clean (heredocs inside `run: |` are an
+        # indentation foot-gun). The script reads icon body from stdin.
+        mkdir -p "$(dirname "${OUT_PATH}")"
+        printf '%s' "${INNER}" | python3 "${GITHUB_ACTION_PATH}/render_card.py" \
+          "${OUT_PATH}" "${ICON}" "${COLOR}" "${BG}" "${FG}" >/dev/null
+
+        echo "Rendered card: ${OUT_PATH}"
+        echo "  icon=${ICON}"
+        echo "  color=${COLOR}"
+        echo "  size=$(wc -c < "${OUT_PATH}" | tr -d ' ') bytes"
+
+        {
+          echo "card_path=${OUT_PATH}"
+          echo "icon=${ICON}"
+          echo "color=${COLOR}"
+        } >> "${GITHUB_OUTPUT}"
+
+        {
+          echo "## Marketplace branding preview"
+          echo ""
+          echo "* Icon: \`${ICON}\` (feather ${FEATHER_REF})"
+          echo "* Colour: \`${COLOR}\` (≈ ${BG})"
+          echo ""
+          echo "Card written to \`${OUT_PATH}\`. Upload it as an artifact"
+          echo "(e.g. via \`actions/upload-artifact\`) to view in the run UI,"
+          echo "or post as an image in a PR comment."
+        } >> "${GITHUB_STEP_SUMMARY:-/dev/stderr}"

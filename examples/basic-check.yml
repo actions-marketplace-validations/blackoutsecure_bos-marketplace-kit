@@ -1,0 +1,36 @@
+# Example: minimal Marketplace pre-publish check.
+#
+# Drop this file at `.github/workflows/marketplace-check.yml` in your
+# Marketplace Action repo. Runs on every PR + push to `main`. Fails
+# the PR if any MP### or SC### check fails.
+#
+# This is the smallest viable wiring of `bos-marketplace-kit`.
+name: marketplace-check
+
+"on":
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: bos-marketplace-kit check
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      # Pin to a release tag (`@v1`) once available; pin to a SHA for
+      # maximum supply-chain safety.
+      - uses: blackoutsecure/bos-marketplace-kit@v1
+        with:
+          action_yml_path: action.yml
+          # Set `true` to surface OP### best-practice warnings as
+          # failures. Default `false` keeps the PR green on style
+          # nits.
+          fail_on_warning: 'false'

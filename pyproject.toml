@@ -1,0 +1,43 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "bos-marketplace-kit"
+version = "0.1.0"
+description = "Local CLI for the BOS Marketplace Kit — validate, preview, and dry-run Marketplace Action releases without pushing."
+readme = "README.md"
+requires-python = ">=3.10"
+license = {file = "LICENSE"}
+authors = [{name = "BlackoutSecure"}]
+keywords = ["github", "actions", "marketplace", "ci", "publishing"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Build Tools",
+    "Topic :: Software Development :: Quality Assurance",
+]
+dependencies = [
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+
+[project.scripts]
+marketplace-kit = "marketplace_kit.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/blackoutsecure/bos-marketplace-kit"
+Issues = "https://github.com/blackoutsecure/bos-marketplace-kit/issues"
+Source = "https://github.com/blackoutsecure/bos-marketplace-kit"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/marketplace_kit"]

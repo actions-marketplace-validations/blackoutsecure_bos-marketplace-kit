@@ -1,0 +1,263 @@
+name: Marketplace name check
+description: >-
+  Verify a proposed Marketplace Action name is available and valid.
+
+  Part of the `bos-marketplace-kit` toolkit. Marketplace name rules
+  (see https://docs.github.com/en/actions/how-tos/create-and-publish-actions/publish-in-github-marketplace#choosing-a-good-name)
+  forbid four kinds of collision:
+
+    1. **GitHub user / org slug.** The name cannot match any existing
+       account on github.com (case-insensitive).
+    2. **Existing Marketplace listing.** The slug
+       `https://github.com/marketplace/actions/<your-slug>` must 404.
+    3. **Reserved category name.** Names like `deployment`,
+       `monitoring`, `ai-assisted` are reserved.
+    4. **Reserved feature name.** Names like `actions`, `marketplace`,
+       `releases`, `pages`, `pull-requests`, etc.
+
+  This action checks all four. Network calls use `curl` against the
+  public github.com surface (no token required for the first two
+  checks).
+
+inputs:
+  proposed_name:
+    description: 'The name string from your `action.yml`.'
+    required: true
+  fail_on_collision:
+    description: >-
+      `true` (default) to exit non-zero on any collision; `false` to
+      log warnings + emit outputs and continue (useful in PR-comment
+      style workflows).
+    required: false
+    default: 'true'
+
+outputs:
+  user_or_org_collision:
+    description: '`true` if a GitHub user/org exists with that slug.'
+    value: ${{ steps.run.outputs.user_or_org_collision }}
+  marketplace_collision:
+    description: '`true` if a Marketplace listing exists with that slug.'
+    value: ${{ steps.run.outputs.marketplace_collision }}
+  reserved_category:
+    description: '`true` if the name is a reserved Marketplace category.'
+    value: ${{ steps.run.outputs.reserved_category }}
+  reserved_feature:
+    description: '`true` if the name is a reserved GitHub feature.'
+    value: ${{ steps.run.outputs.reserved_feature }}
+  slug:
+    description: 'The normalized slug used for collision checks.'
+    value: ${{ steps.run.outputs.slug }}
+
+runs:
+  using: composite
+  steps:
+    - id: run
+      shell: bash
+      env:
+        PROPOSED_NAME:     ${{ inputs.proposed_name }}
+        FAIL_ON_COLLISION: ${{ inputs.fail_on_collision }}
+      run: |
+        set -euo pipefail
+
+        die() { echo "::error title=Marketplace name check::$*" >&2; exit 1; }
+
+        case "${FAIL_ON_COLLISION}" in
+          true|false) ;;
+          *) die "fail_on_collision must be 'true' or 'false' (got: '${FAIL_ON_COLLISION}')" ;;
+        esac
+        if [ -z "${PROPOSED_NAME}" ]; then
+          die "proposed_name must be non-empty"
+        fi
+
+        # ----- Normalize to a Marketplace-style slug -----------------------
+        # Lowercase, replace whitespace + non-alnum with hyphens, squeeze
+        # repeated hyphens, trim leading/trailing hyphens. Matches the
+        # transform Marketplace itself applies.
+        SLUG="$(printf '%s' "${PROPOSED_NAME}" \
+                | tr '[:upper:]' '[:lower:]' \
+                | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')"
+
+        if [ -z "${SLUG}" ]; then
+          die "proposed_name normalized to empty slug (only special chars?)"
+        fi
+
+        echo "Proposed name: '${PROPOSED_NAME}'"
+        echo "Normalized slug: '${SLUG}'"
+
+        # ----- Check 1: GitHub user / org collision ------------------------
+        # The /users API returns 200 for both users AND organizations.
+        # 404 = available.
+        USER_HTTP="$(curl -fsS -o /dev/null -w '%{http_code}' \
+          -H 'Accept: application/vnd.github+json' \
+          "https://api.github.com/users/${SLUG}" || echo "${?}_err")"
+        USER_COLLISION=false
+        case "${USER_HTTP}" in
+          200) USER_COLLISION=true ;;
+          404) USER_COLLISION=false ;;
+          *) echo "::warning::user-check API returned unexpected status '${USER_HTTP}' — treating as no-collision" ;;
+        esac
+
+        # ----- Check 2: Marketplace listing collision ----------------------
+        # Marketplace listings render at /marketplace/actions/<slug>.
+        # The page returns 200 if taken, 404 if not. No API equivalent.
+        MP_HTTP="$(curl -fsS -o /dev/null -w '%{http_code}' \
+          -A 'bos-marketplace-kit/name-check' \
+          "https://github.com/marketplace/actions/${SLUG}" || echo "${?}_err")"
+        MP_COLLISION=false
+        case "${MP_HTTP}" in
+          200) MP_COLLISION=true ;;
+          301|302) MP_COLLISION=true ;;
+          404) MP_COLLISION=false ;;
+          *) echo "::warning::marketplace-check returned unexpected status '${MP_HTTP}' — treating as no-collision" ;;
+        esac
+
+        # ----- Check 3: Reserved category name -----------------------------
+        # Snapshot of Marketplace category slugs as of this writing.
+        # https://github.com/marketplace?type=actions has the full list.
+        RESERVED_CATEGORIES="
+          ai-assisted
+          api-management
+          chat
+          code-quality
+          code-review
+          continuous-integration
+          dependency-management
+          deployment
+          ides
+          learning
+          localization
+          mobile
+          monitoring
+          open-source-management
+          project-management
+          publishing
+          security
+          support
+          testing
+          utilities
+        "
+        RESERVED_CATEGORY=false
+        for cat in ${RESERVED_CATEGORIES}; do
+          if [ "${SLUG}" = "${cat}" ]; then
+            RESERVED_CATEGORY=true
+            break
+          fi
+        done
+
+        # ----- Check 4: Reserved feature name ------------------------------
+        # Names that conflict with GitHub features themselves. Conservative
+        # list — github docs don't enumerate this exhaustively.
+        RESERVED_FEATURES="
+          actions
+          advisories
+          api
+          assets
+          billing
+          blog
+          codespaces
+          collections
+          contact
+          dashboard
+          discussions
+          discover
+          enterprise
+          events
+          explore
+          features
+          gist
+          gists
+          help
+          home
+          integrations
+          issues
+          login
+          logout
+          marketplace
+          new
+          notifications
+          orgs
+          packages
+          pages
+          partners
+          pricing
+          projects
+          pulls
+          pull-requests
+          releases
+          search
+          security
+          settings
+          signup
+          site
+          sponsors
+          stars
+          status
+          support
+          teams
+          tos
+          trending
+          users
+          watching
+          webhooks
+        "
+        RESERVED_FEATURE=false
+        for f in ${RESERVED_FEATURES}; do
+          if [ "${SLUG}" = "${f}" ]; then
+            RESERVED_FEATURE=true
+            break
+          fi
+        done
+
+        # ----- Report ------------------------------------------------------
+        {
+          echo "## Marketplace name check"
+          echo ""
+          echo "* Proposed: \`${PROPOSED_NAME}\`"
+          echo "* Slug: \`${SLUG}\`"
+          echo ""
+          echo "| Check | Result |"
+          echo "|-------|--------|"
+          if [ "${USER_COLLISION}" = "true" ]; then
+            echo "| GitHub user / org \`${SLUG}\` | ❌ taken — https://github.com/${SLUG} |"
+          else
+            echo "| GitHub user / org \`${SLUG}\` | ✅ available |"
+          fi
+          if [ "${MP_COLLISION}" = "true" ]; then
+            echo "| Marketplace listing \`${SLUG}\` | ❌ taken — https://github.com/marketplace/actions/${SLUG} |"
+          else
+            echo "| Marketplace listing \`${SLUG}\` | ✅ available |"
+          fi
+          if [ "${RESERVED_CATEGORY}" = "true" ]; then
+            echo "| Reserved Marketplace category | ❌ \`${SLUG}\` is a category |"
+          else
+            echo "| Reserved Marketplace category | ✅ not a category |"
+          fi
+          if [ "${RESERVED_FEATURE}" = "true" ]; then
+            echo "| Reserved GitHub feature | ❌ \`${SLUG}\` is a GitHub feature path |"
+          else
+            echo "| Reserved GitHub feature | ✅ not a reserved feature |"
+          fi
+          echo ""
+          echo "Generated by [bos-marketplace-kit](https://github.com/blackoutsecure/bos-marketplace-kit)."
+        } >> "${GITHUB_STEP_SUMMARY:-/dev/stderr}"
+
+        {
+          echo "user_or_org_collision=${USER_COLLISION}"
+          echo "marketplace_collision=${MP_COLLISION}"
+          echo "reserved_category=${RESERVED_CATEGORY}"
+          echo "reserved_feature=${RESERVED_FEATURE}"
+          echo "slug=${SLUG}"
+        } >> "${GITHUB_OUTPUT}"
+
+        if [ "${USER_COLLISION}" = "true" ] || \
+           [ "${MP_COLLISION}" = "true" ] || \
+           [ "${RESERVED_CATEGORY}" = "true" ] || \
+           [ "${RESERVED_FEATURE}" = "true" ]; then
+          if [ "${FAIL_ON_COLLISION}" = "true" ]; then
+            die "name '${PROPOSED_NAME}' has at least one collision — see report above"
+          else
+            echo "::warning::name '${PROPOSED_NAME}' has at least one collision — see report (fail_on_collision=false, not failing)"
+          fi
+        else
+          echo "Name '${PROPOSED_NAME}' (slug '${SLUG}') is available and valid."
+        fi

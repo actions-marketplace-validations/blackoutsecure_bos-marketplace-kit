@@ -1,0 +1,108 @@
+# Self-dogfood: run the kit's own `check` action against itself.
+#
+# This is the canonical example of how downstream consumers wire the
+# kit. If THIS workflow can't pass against the kit's own action.yml,
+# the kit doesn't ship.
+#
+# Runs on `dev` only — never promoted.
+name: self-check
+
+"on":
+  push:
+    branches: [dev]
+  pull_request:
+    branches: [dev]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: self-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Run check against own action.yml
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - id: check
+        uses: ./.github/actions/check
+        with:
+          action_yml_path: action.yml
+          fail_on_warning: 'true'
+      - name: Show outputs
+        if: always()
+        env:
+          PASSED:   ${{ steps.check.outputs.passed }}
+          FAILED:   ${{ steps.check.outputs.failed }}
+          WARNINGS: ${{ steps.check.outputs.warnings }}
+        run: |
+          set -euo pipefail
+          echo "passed=${PASSED}  failed=${FAILED}  warnings=${WARNINGS}"
+
+  name-check:
+    name: Verify Marketplace name availability
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # We only run name-check on pull_request, not on every dev push,
+    # because external network calls vary in latency.
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Extract action name
+        id: name
+        run: |
+          set -euo pipefail
+          name="$(python3 -c "import yaml; print(yaml.safe_load(open('action.yml'))['name'])")"
+          echo "name=${name}" >> "${GITHUB_OUTPUT}"
+          echo "Action name: ${name}"
+      - id: nc
+        uses: ./.github/actions/name-check
+        with:
+          proposed_name: ${{ steps.name.outputs.name }}
+          # Allow our OWN listing to "collide" with itself post-publish:
+          # name-check would otherwise fail every PR after first release.
+          fail_on_collision: 'false'
+      - name: Surface collisions as warnings
+        if: always()
+        env:
+          USER_OR_ORG: ${{ steps.nc.outputs.user_or_org_collision }}
+          MARKETPLACE: ${{ steps.nc.outputs.marketplace_collision }}
+          CATEGORY:    ${{ steps.nc.outputs.reserved_category }}
+          FEATURE:     ${{ steps.nc.outputs.reserved_feature }}
+        run: |
+          set -euo pipefail
+          # The Marketplace collision becomes EXPECTED after first
+          # publish. Surface all four as warnings; humans review.
+          for var in USER_OR_ORG MARKETPLACE CATEGORY FEATURE; do
+            val="${!var}"
+            if [ "${val}" = "true" ]; then
+              echo "::warning::name-check: ${var}=true"
+            fi
+          done
+
+  branding:
+    name: Render branding preview
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - id: bp
+        uses: ./.github/actions/branding-preview
+        with:
+          action_yml_path: action.yml
+          output_path: ${{ runner.temp }}/branding-preview.svg
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: branding-preview
+          path: ${{ steps.bp.outputs.card_path }}
+          if-no-files-found: error
+          retention-days: 14

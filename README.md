@@ -115,8 +115,7 @@ bos-marketplace-kit/
 ├── scripts/
 │   ├── bootstrap-ruleset.sh            # one-shot main-branch protection
 │   └── bootstrap-branch-protection.sh  # legacy fallback
-├── src/marketplace_kit/                # Python CLI
-└── examples/                           # copy-paste workflow snippets
+└── src/marketplace_kit/                # Python CLI
 ```
 
 ## The dev → main publish model
@@ -157,8 +156,207 @@ See [`docs/publishing.md`](docs/publishing.md) for the full walkthrough.
   publish guide using this kit.
 * [`docs/architecture.md`](docs/architecture.md) — design choices: why
   composites + workflow + CLI share one codebase, why bash-first, etc.
-* [`examples/`](examples/) — copy-paste workflow snippets for the common
-  use cases.
+* [Examples](#examples) — copy-paste workflow snippets for the common
+  use cases (below).
+
+## Examples
+
+### Minimal pre-publish check
+
+Drop this at `.github/workflows/marketplace-check.yml` in your
+Marketplace Action repo. Runs on every PR and push to `main`; fails
+the PR if any `MP###` / `SC###` check fails.
+
+```yaml
+name: marketplace-check
+
+"on":
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: bos-marketplace-kit check
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      # Pin to a release tag (`@v1`) for ergonomic upgrades, or to a
+      # SHA for maximum supply-chain safety.
+      - uses: blackoutsecure/bos-marketplace-kit@v1
+        with:
+          action_yml_path: action.yml
+          # Set `true` to surface OP### best-practice warnings as
+          # failures. Default `false` keeps the PR green on style nits.
+          fail_on_warning: 'false'
+```
+
+### Full lifecycle (check + guard + promote)
+
+Split the snippets below into three files under
+`.github/workflows/` on your **`dev`** branch (never on `main` —
+Marketplace publishing prohibits workflows on the default branch).
+
+Prerequisites:
+
+* Default branch is `main`.
+* Working branch is `dev` (or your equivalent).
+* `vars.MARKETPLACE_BYPASS_ACTOR_ID` is set if you've enabled the org
+  ruleset (see [`scripts/bootstrap-ruleset.sh`](scripts/bootstrap-ruleset.sh)).
+
+#### File 1 — `.github/workflows/marketplace-check.yml`
+
+```yaml
+name: marketplace-check
+
+"on":
+  push:
+    branches: [dev]
+  pull_request:
+    branches: [dev]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Pre-publish validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: blackoutsecure/bos-marketplace-kit@v1
+        with:
+          action_yml_path: action.yml
+          fail_on_warning: 'true'
+
+  name-check:
+    # Only run on PRs (one external API call per check).
+    if: github.event_name == 'pull_request'
+    name: Marketplace name availability
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - id: name
+        run: |
+          set -euo pipefail
+          name="$(python3 -c "import yaml; print(yaml.safe_load(open('action.yml'))['name'])")"
+          echo "name=${name}" >> "${GITHUB_OUTPUT}"
+      - uses: blackoutsecure/bos-marketplace-kit/.github/actions/name-check@v1
+        with:
+          proposed_name: ${{ steps.name.outputs.name }}
+          # After first publish your own listing collides — switch
+          # this to 'false' once you've published.
+          fail_on_collision: 'true'
+
+  branding:
+    name: Render branding preview
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - id: bp
+        uses: blackoutsecure/bos-marketplace-kit/.github/actions/branding-preview@v1
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: marketplace-branding-preview
+          path: ${{ steps.bp.outputs.card_path }}
+```
+
+#### File 2 — `.github/workflows/marketplace-guard.yml`
+
+Defence-in-depth against accidentally adding a workflow to `main`.
+Triggers on PRs into `main` from `dev`.
+
+```yaml
+name: marketplace-guard
+
+"on":
+  pull_request_target:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.pull_request.base.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: blackoutsecure/bos-marketplace-kit/.github/actions/guard@v1
+        with:
+          pr_base_sha:        ${{ github.event.pull_request.base.sha }}
+          pr_head_sha:        ${{ github.event.pull_request.head.sha }}
+          check_pr_diff:      'true'
+          check_tree_state:   'true'
+          require_action_yml: 'true'
+```
+
+#### File 3 — `.github/workflows/release.yml`
+
+Manual release: operator invokes via `gh workflow run release.yml`.
+Promotes `dev` → `main` (allowlist), tags `main`, and publishes a
+GitHub Release.
+
+```yaml
+name: release
+
+"on":
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Tag (SemVer, e.g. v1.0.0).'
+        required: true
+      dry_run:
+        description: 'Stage diff but do not push.'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: dev
+          fetch-depth: 0
+          persist-credentials: true
+      - uses: blackoutsecure/bos-marketplace-kit/.github/actions/promote@v1
+        with:
+          source_branch:  dev
+          target_branch:  main
+          tag_name:       ${{ inputs.tag_name }}
+          dry_run:        ${{ inputs.dry_run }}
+          allowlist_paths: |
+            action.yml
+            LICENSE
+            README.md
+          extra_allowlist_paths: |
+            .github/dependabot.yml
+```
 
 ## Versioning
 

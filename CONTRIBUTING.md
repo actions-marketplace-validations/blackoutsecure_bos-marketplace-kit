@@ -23,8 +23,9 @@ Please include:
 3. Expected vs. actual output. Paste the JSON report (`--json`) when
    relevant — it's machine-readable and easy to diff.
 
-For suspected security issues see [`SECURITY.md`](SECURITY.md). Do **not**
-file public issues for security reports.
+For suspected security issues see the kit's
+[security policy in the README](README.md#security) (private channels,
+hardening notes). Do **not** file public issues for security reports.
 
 ## Proposing changes
 

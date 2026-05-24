@@ -54,11 +54,28 @@ jobs:
           # for the org `.github` repo metadata + contents endpoint.
           github_token: ${{ github.token }}
           # `org_health_repo` defaults to `${owner}/.github` when empty.
-          # require_security / require_code_of_conduct / require_contributing
-          # default to `warn`; SUPPORT / issue / PR / FUNDING default to `skip`.
+          #
+          # We dogfood the *_source machinery here. The kit ships a
+          # repo-specific `CONTRIBUTING.md` (refers to `make check`,
+          # the dev->main release flow, JSON report format, etc.) so
+          # CH002 stays `local`. The rest of the community-health
+          # files (CoC, SECURITY, SUPPORT, FUNDING) live in
+          # `blackoutsecure/.github` and are intentionally absent from
+          # this repo, so we mark them `inherit`. Issue/PR templates
+          # are repo-specific (kit-shaped bug-report + PR checklist),
+          # so the source for those remains `local`.
           require_security:        warn
           require_code_of_conduct: warn
           require_contributing:    warn
+          require_support:         warn
+          require_funding:         warn
+          security_source:         inherit
+          code_of_conduct_source:  inherit
+          support_source:          inherit
+          funding_source:          inherit
+          contributing_source:     local
+          issue_templates_source:  local
+          pr_template_source:      local
       - name: Show outputs
         if: always()
         env:

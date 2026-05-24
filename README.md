@@ -800,6 +800,59 @@ Each rule takes a matching `require_*` input (`require_code_of_conduct`,
 `require_pr_template`, `require_funding`) with values `fail | warn |
 skip` and the same semantics as `require_security` above.
 
+#### Source mode — local vs inherited from the org `.github` repo
+
+Each CH/SC rule additionally accepts a `*_source` input describing
+*where* the file is expected to live. This lets you express the
+"don't ship CoC/SECURITY/SUPPORT in every repo; inherit them from
+the org `.github` repo" pattern without losing the safety net of an
+explicit check.
+
+| Mode      | Local check | Org fallback | Pass when                                                  |
+|-----------|-------------|--------------|------------------------------------------------------------|
+| `local`   | yes         | **disabled** | the file exists in this repo.                              |
+| `inherit` | **skipped** | yes          | the file exists in `${org_health_repo}`.                   |
+| `either`  | yes         | yes          | the file exists in either location (default — back-compat). |
+
+Two layers of inputs:
+
+* **`community_health_source`** sets the global default (one of
+  `local | inherit | either`; default `either`).
+* **Per-rule overrides** — `security_source`, `code_of_conduct_source`,
+  `contributing_source`, `support_source`, `issue_templates_source`,
+  `pr_template_source`, `funding_source` — take precedence when
+  non-empty (default empty = use global).
+
+Worked example: the kit itself ships only a repo-specific
+`CONTRIBUTING.md` and the issue/PR templates; CoC, SECURITY, SUPPORT,
+and FUNDING are inherited from `blackoutsecure/.github`:
+
+```yaml
+- uses: blackoutsecure/bos-marketplace-kit@v1
+  with:
+    github_token:          ${{ github.token }}
+    require_security:      warn
+    require_code_of_conduct: warn
+    require_contributing:  warn
+    require_support:       warn
+    require_funding:       warn
+    # Inherit these from the org `.github` repo:
+    security_source:        inherit
+    code_of_conduct_source: inherit
+    support_source:         inherit
+    funding_source:         inherit
+    # Local-only (repo-specific content):
+    contributing_source:    local
+    issue_templates_source: local
+    pr_template_source:     local
+```
+
+When a rule's source is `inherit` and the org lookup is unavailable
+(token missing, `check_org_health: false`, or the probe fails), the
+rule emits the configured severity with an explicit reason rather
+than silently falling back. This guarantees that "inherit" never
+means "silently pass".
+
 #### Org-aware lookup
 
 Set `check_org_health: true` (default) and pass `github_token:
@@ -836,9 +889,20 @@ Placeholders: `{{owner}}`, `{{repo_name}}`, `{{contact_email}}`,
 conservative defaults (`YOUR-ORG`, CWD basename,
 `security@example.com`).
 
-The `--ai` flag is reserved for a future iteration that drafts the
-policy using a language model; today it falls back to the static
-template and prints a notice.
+#### `auto_generate_missing` — reserved for a future iteration
+
+A `auto_generate_missing: false | true` input is declared (default
+`false`) to reserve the API for a future feature: when set to
+`true`, missing files would be drafted by an LLM at workflow time
+and opened as a PR (against this repo for `local`/`either` rules,
+or against `${org_health_repo}` for `inherit`-mode rules) so policy
+files stay current as guidance evolves.
+
+This input is a forward-compatible stub today — setting `true`
+emits a one-time warning and otherwise has no effect. Existing
+callers don't need to change anything once the implementation lands.
+The static `marketplace-kit generate-policy` command continues to
+work today and is the supported way to bootstrap a file.
 
 ### Adding new rules
 
@@ -868,8 +932,54 @@ read-only to humans.
 
 ## Security
 
-See [`SECURITY.md`](SECURITY.md). Do not file public issues for
-security reports.
+This repo's security policy is **inherited** from the organisation
+defaults at [`blackoutsecure/.github`][org-health], which lists the
+private channels for reporting vulnerabilities. Do not file public
+issues for security reports.
+
+### Reporting
+
+Use one of the following private channels:
+
+1. GitHub's [private vulnerability reporting][gh-pvr] (preferred).
+   Navigate to the repo's **Security → Report a vulnerability** tab.
+2. Email `security@blackoutsecure.com` with a clear subject line
+   that starts with `[bos-marketplace-kit]`.
+
+### Scope (kit-specific)
+
+In scope:
+
+* The composite actions under `.github/actions/**`.
+* The Python CLI under `src/marketplace_kit/**`.
+* The reusable workflows under `.github/workflows/**`.
+* The bootstrap scripts under `scripts/**`.
+
+Out of scope:
+
+* GitHub Marketplace itself (report to GitHub via
+  <https://github.com/security>).
+* Third-party tools we invoke (`actionlint`, `action-validator`, etc.) —
+  report upstream.
+* Bugs in consumer repos that this tool happens to lint.
+
+### Hardening notes for consumers
+
+If you wire this kit into your own CI:
+
+* Pin our actions by **commit SHA**, not tag. Tags can be moved.
+* Set the **minimum required `permissions:`** on the calling workflow.
+  `guard` needs `contents: read` + `pull-requests: read`. `promote`
+  needs `contents: write`. `check` needs `contents: read`.
+* When calling `guard` via `pull_request_target`, do **not** check
+  out the PR head. The default checkout of the base ref is correct
+  and safe.
+* When calling `promote`, use a deploy key or a fine-grained PAT
+  scoped to the target repo only. Do not use a classic PAT with
+  broad scope.
+
+[org-health]: https://github.com/blackoutsecure/.github
+[gh-pvr]: https://docs.github.com/en/code-security/security-advisories/guidance-on-reporting-and-writing-information-about-vulnerabilities/privately-reporting-a-security-vulnerability
 
 ## License
 

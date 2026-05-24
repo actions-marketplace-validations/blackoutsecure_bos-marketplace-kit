@@ -91,6 +91,57 @@ inputs:
     required: false
     default: 'skip'
 
+  # ----- CH/SC source-mode pass-throughs ----------------------------------
+  # Where each community-health file is expected to live:
+  #   `local`   -- file must be in this repo (org fallback disabled).
+  #   `inherit` -- file must be in the org `.github` repo (local
+  #                copy intentionally absent; not consulted).
+  #   `either`  -- check local first, fall back to org (default).
+  # `community_health_source` is the global default; per-rule
+  # overrides take precedence when non-empty.
+
+  community_health_source:
+    description: "Global source mode: 'local', 'inherit', or 'either'."
+    required: false
+    default: 'either'
+  security_source:
+    description: "SC003 source override (or empty to use global)."
+    required: false
+    default: ''
+  code_of_conduct_source:
+    description: "CH001 source override (or empty to use global)."
+    required: false
+    default: ''
+  contributing_source:
+    description: "CH002 source override (or empty to use global)."
+    required: false
+    default: ''
+  support_source:
+    description: "CH003 source override (or empty to use global)."
+    required: false
+    default: ''
+  issue_templates_source:
+    description: "CH004 source override (or empty to use global)."
+    required: false
+    default: ''
+  pr_template_source:
+    description: "CH005 source override (or empty to use global)."
+    required: false
+    default: ''
+  funding_source:
+    description: "CH006 source override (or empty to use global)."
+    required: false
+    default: ''
+
+  # ----- AI auto-generation (FUTURE / NOT YET IMPLEMENTED) ----------------
+  auto_generate_missing:
+    description: >-
+      [FUTURE] When `true`, use an LLM to draft missing
+      community-health files and open a PR. Stub today; reserved for
+      a future release.
+    required: false
+    default: 'false'
+
 outputs:
   passed:
     description: 'Number of checks that passed.'
@@ -125,3 +176,12 @@ runs:
         require_issue_templates: ${{ inputs.require_issue_templates }}
         require_pr_template:     ${{ inputs.require_pr_template }}
         require_funding:         ${{ inputs.require_funding }}
+        community_health_source: ${{ inputs.community_health_source }}
+        security_source:         ${{ inputs.security_source }}
+        code_of_conduct_source:  ${{ inputs.code_of_conduct_source }}
+        contributing_source:     ${{ inputs.contributing_source }}
+        support_source:          ${{ inputs.support_source }}
+        issue_templates_source:  ${{ inputs.issue_templates_source }}
+        pr_template_source:      ${{ inputs.pr_template_source }}
+        funding_source:          ${{ inputs.funding_source }}
+        auto_generate_missing:   ${{ inputs.auto_generate_missing }}

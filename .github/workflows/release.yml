@@ -86,13 +86,20 @@ jobs:
           update_major_tag: ${{ inputs.update_major_tag }}
           # The Marketplace-facing surface on `main`. Everything else
           # (workflows, tests, scripts, src/, docs/) stays on `dev`.
+          #
+          # Community-health files (CoC, SECURITY, SUPPORT, FUNDING)
+          # are intentionally NOT promoted — they're inherited from
+          # the org `.github` repo (`blackoutsecure/.github`) and the
+          # kit's own check composite is configured with
+          # `*_source: inherit` for those rules in self-check.yml.
+          # The Marketplace listing's community profile picks them up
+          # from the org default, so consumers see them as present
+          # without each repo shipping a duplicate copy.
           allowlist_paths: |
             action.yml
             LICENSE
             NOTICE
             README.md
-            SECURITY.md
-            CODE_OF_CONDUCT.md
             .github/actions/_lib
             .github/actions/check
             .github/actions/guard

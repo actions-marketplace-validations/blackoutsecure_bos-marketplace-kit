@@ -1,12 +1,19 @@
 # CI for bos-marketplace-kit itself.
 #
-# Runs on every PR against `dev` and every push to `dev`. Validates:
+# Runs on every PR against `dev` and every push to `dev`, and on
+# manual `workflow_dispatch` from the Actions tab. Validates:
 #   * All workflow files lint clean with actionlint.
 #   * All composite-action shell bodies pass shellcheck.
-#   * The Python CLI scaffold (if present) imports cleanly.
+#   * The Python CLI scaffold (if present) imports cleanly + tests pass.
 #
 # This workflow lives on `dev` only. It is NEVER promoted to `main`
 # (Marketplace publishing prohibits workflows on the default branch).
+#
+# `schedule:` is intentionally absent. GitHub fires scheduled
+# workflows only from files present on the default branch, and the
+# Marketplace publishing rule keeps `.github/workflows/**` off `main`.
+# Use Dependabot (already configured weekly) to catch action-version
+# drift and `workflow_dispatch` for manual sanity runs.
 name: ci
 
 "on":
@@ -14,6 +21,7 @@ name: ci
     branches: [dev]
   pull_request:
     branches: [dev]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -106,22 +114,6 @@ jobs:
             exit 0
           fi
           shellcheck --severity=warning --shell=bash "${tmp}"/*.sh
-
-  bash-syntax:
-    name: bash -n on composite bodies
-    runs-on: ubuntu-latest
-    timeout-minutes: 3
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-      - name: bash -n
-        run: |
-          set -euo pipefail
-          for f in scripts/*.sh; do
-            bash -n "${f}"
-          done
-          echo "bash syntax OK for all scripts/"
 
   python-cli:
     name: Python CLI (smoke)

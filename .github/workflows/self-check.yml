@@ -4,7 +4,11 @@
 # kit. If THIS workflow can't pass against the kit's own action.yml,
 # the kit doesn't ship.
 #
-# Runs on `dev` only — never promoted.
+# Runs on `dev` only — never promoted. Manual `workflow_dispatch` is
+# available from the Actions tab for ad-hoc re-runs (e.g. after
+# tuning rule severities). `schedule:` is intentionally absent —
+# GitHub only fires scheduled workflows from the default branch, and
+# Marketplace publishing keeps `.github/workflows/**` off `main`.
 name: self-check
 
 "on":
@@ -12,6 +16,18 @@ name: self-check
     branches: [dev]
   pull_request:
     branches: [dev]
+  workflow_dispatch:
+    inputs:
+      fail_on_warning:
+        description: 'Treat warnings as failures (default true).'
+        required: false
+        type: boolean
+        default: true
+      run_name_check:
+        description: 'Also run the name-check job (skipped by default on push).'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -33,7 +49,7 @@ jobs:
         uses: ./.github/actions/check
         with:
           action_yml_path: action.yml
-          fail_on_warning: 'true'
+          fail_on_warning: ${{ inputs.fail_on_warning || 'true' }}
           # Org-aware community-health lookup. The token is read-only
           # for the org `.github` repo metadata + contents endpoint.
           github_token: ${{ github.token }}
@@ -57,9 +73,10 @@ jobs:
     name: Verify Marketplace name availability
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    # We only run name-check on pull_request, not on every dev push,
-    # because external network calls vary in latency.
-    if: github.event_name == 'pull_request'
+    # Run on PRs (default) and on manual dispatch when explicitly
+    # requested. Skip on plain dev pushes — the external Marketplace
+    # search has variable latency and isn't worth the noise.
+    if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.run_name_check)
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:

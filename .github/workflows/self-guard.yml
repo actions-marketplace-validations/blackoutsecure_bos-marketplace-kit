@@ -7,6 +7,15 @@
 # prohibits workflows on the default branch); a PR-base read on
 # `main` would find no workflows. See the guard composite's docstring
 # for the security analysis.
+#
+# Manual `workflow_dispatch` is available from the Actions tab —
+# useful for validating the guard against current `dev` outside of a
+# PR cycle. Under dispatch, `CHECK_PR_DIFF` evaluates to `false` and
+# the diff codepath is skipped; the tree-state and required-paths
+# checks still run against the dispatched ref.
+#
+# `schedule:` is intentionally absent (workflows aren't on `main`,
+# which is where GitHub looks for scheduled triggers).
 name: self-guard
 
 "on":
@@ -14,6 +23,7 @@ name: self-guard
     branches: [main]
   push:
     branches: [dev]
+  workflow_dispatch:
 
 permissions:
   contents: read

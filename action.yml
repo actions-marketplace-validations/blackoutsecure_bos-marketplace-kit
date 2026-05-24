@@ -1,4 +1,4 @@
-name: BOS Marketplace Kit
+name: Blackout Secure Marketplace Kit
 description: >-
   Pre-publish validator for GitHub Marketplace Actions. Lints metadata,
   branding, naming, and security defaults.

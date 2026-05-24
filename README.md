@@ -1,9 +1,13 @@
-# bos-marketplace-kit
+# Blackout Secure Marketplace Kit
+
+**Copyright © 2025-2026 Blackout Secure | Apache License 2.0**
+
+[![Marketplace](https://img.shields.io/badge/GitHub%20Marketplace-blue?logo=github)](https://github.com/marketplace/actions/blackout-secure-marketplace-kit)
+[![GitHub release](https://img.shields.io/github/v/release/blackoutsecure/bos-marketplace-kit?sort=semver)](https://github.com/blackoutsecure/bos-marketplace-kit/releases)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
+[![Made by BlackoutSecure](https://img.shields.io/badge/made%20by-BlackoutSecure-1f1f1f)](https://github.com/blackoutsecure)
 
 > Lint, gate, and publish GitHub Marketplace Actions — without the boilerplate.
-
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Made by BlackoutSecure](https://img.shields.io/badge/made%20by-BlackoutSecure-1f1f1f)](https://github.com/blackoutsecure)
 
 **bos-marketplace-kit** is a self-contained toolkit for shipping
 GitHub Marketplace Actions safely:
@@ -174,4 +178,4 @@ security reports.
 
 ## License
 
-[MIT](LICENSE). See [`NOTICE`](NOTICE) for third-party attributions.
+[Apache License 2.0](LICENSE). See [`NOTICE`](NOTICE) for third-party attributions.

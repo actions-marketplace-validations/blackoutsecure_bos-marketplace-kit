@@ -91,4 +91,4 @@ on every PR, and `release.yml` uses `promote` to do the actual promotion.
 ## License
 
 By contributing you agree that your contributions are licensed under the
-MIT License (see [`LICENSE`](LICENSE)).
+Apache License 2.0 (see [`LICENSE`](LICENSE)).

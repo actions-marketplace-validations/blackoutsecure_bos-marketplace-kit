@@ -55,30 +55,22 @@ jobs:
           github_token: ${{ github.token }}
           # `org_health_repo` defaults to `${owner}/.github` when empty.
           #
-          # We dogfood the *_source machinery here. The kit ships a
-          # repo-specific `CONTRIBUTING.md` (refers to `make check`,
-          # the dev->main release flow, JSON report format, etc.) so
-          # CH002 stays `local`. Everything else lives in
-          # `blackoutsecure/.github` and is intentionally absent from
-          # this repo:
-          #   - CoC, SECURITY, SUPPORT, FUNDING (community-health docs)
-          #   - issue templates + PR template (generic across the org)
-          # so we mark them all `inherit`. Removing the per-repo
-          # duplicates of issue/PR templates means contributors see the
-          # org-wide forms, which include a security-impact field and
-          # other fields the kit-specific copies lacked.
+          # We dogfood the *_source machinery here. The kit no longer
+          # ships any of the seven community-health files locally --
+          # they all live in `blackoutsecure/.github` and inherit:
+          #   - CoC, SECURITY, SUPPORT, FUNDING
+          #   - CONTRIBUTING (kit-specific dev-loop / release flow
+          #     content has been folded into README.md, which the
+          #     org CONTRIBUTING.md explicitly points contributors to)
+          #   - issue templates + PR template
+          # The single global `community_health_source: inherit`
+          # covers all of them; no per-rule overrides needed.
           require_security:        warn
           require_code_of_conduct: warn
           require_contributing:    warn
           require_support:         warn
           require_funding:         warn
-          security_source:         inherit
-          code_of_conduct_source:  inherit
-          support_source:          inherit
-          funding_source:          inherit
-          contributing_source:     local
-          issue_templates_source:  inherit
-          pr_template_source:      inherit
+          community_health_source: inherit
           # New rule families (v0.2.0+). The kit dogfoods these too.
           # We ship a `.github/dependabot.yml` (DP001 = fail),
           # a CodeQL workflow on dev (CQ001 = fail), and lint configs

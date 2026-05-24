@@ -932,28 +932,42 @@ Two layers of inputs:
   `pr_template_source`, `funding_source` — take precedence when
   non-empty (default empty = use global).
 
-Worked example: the kit itself ships only a repo-specific
-`CONTRIBUTING.md` and the issue/PR templates; CoC, SECURITY, SUPPORT,
-and FUNDING are inherited from `blackoutsecure/.github`:
+Worked example: the kit itself ships **none** of the seven
+community-health files locally — they all live in
+`blackoutsecure/.github` and inherit. The kit's [self-check
+workflow](.github/workflows/self-check.yml) wires it up like this:
 
 ```yaml
 - uses: blackoutsecure/bos-marketplace-kit@v1
   with:
-    github_token:          ${{ github.token }}
-    require_security:      warn
+    github_token:            ${{ github.token }}
+    require_security:        warn
     require_code_of_conduct: warn
-    require_contributing:  warn
-    require_support:       warn
-    require_funding:       warn
-    # Inherit these from the org `.github` repo:
-    security_source:        inherit
-    code_of_conduct_source: inherit
-    support_source:         inherit
-    funding_source:         inherit
-    # Local-only (repo-specific content):
-    contributing_source:    local
-    issue_templates_source: local
-    pr_template_source:     local
+    require_contributing:    warn
+    require_support:         warn
+    require_funding:         warn
+    # Inherit all community-health files from the org `.github` repo:
+    community_health_source: inherit
+```
+
+A more typical consumer keeps a repo-specific `CONTRIBUTING.md`
+(local release flow, dev-loop commands, etc.) and inherits the rest
+from their org `.github` repo:
+
+```yaml
+- uses: blackoutsecure/bos-marketplace-kit@v1
+  with:
+    github_token:            ${{ github.token }}
+    require_security:        warn
+    require_code_of_conduct: warn
+    require_contributing:    warn
+    require_support:         warn
+    require_funding:         warn
+    # Default everything to inherit ...
+    community_health_source: inherit
+    # ... but keep the contributor guide local because it has
+    # repo-specific release / dev-loop content:
+    contributing_source:     local
 ```
 
 When a rule's source is `inherit` and the org lookup is unavailable
@@ -1113,9 +1127,61 @@ for ergonomic upgrades.
 
 ## Contributing
 
-See [`CONTRIBUTING.md`](CONTRIBUTING.md). All PRs target the `dev`
-branch — the `main` branch is built by the release pipeline and is
-read-only to humans.
+General contribution guidelines (issue triage, PR style, test
+expectations, security review) come from the organisation default at
+[`blackoutsecure/.github/CONTRIBUTING.md`](https://github.com/blackoutsecure/.github/blob/main/CONTRIBUTING.md),
+which applies to every repo in the org. The kit-specific bits are
+below.
+
+All PRs target the **`dev`** branch. The `main` branch is built by
+the release pipeline (see
+[Publishing to Marketplace](#publishing-to-marketplace)) and is
+read-only to humans — PRs opened against `main` will be closed.
+
+### Local development
+
+```bash
+# Install dev deps (Python 3.11+)
+pipx install --editable .[dev]
+
+# Run all local checks (lint + tests). This is what CI runs.
+make check
+
+# Run the CLI against the local repo
+marketplace-kit check .
+
+# Run the CLI against a remote repo (uses GitHub API, no clone)
+marketplace-kit check owner/repo
+```
+
+The composite actions under `.github/actions/` are pure bash and
+runnable on any Linux host with `git`, `jq`, and `curl` — no Python
+needed if you only want to exercise the action surface.
+
+### Style
+
+* **Bash**: `shellcheck` clean at `--severity=warning`,
+  `set -euo pipefail`, `${VAR}` braces consistently.
+* **Python**: `ruff` + `black` defaults, type hints on public APIs.
+* **YAML (workflows)**: `actionlint` clean, pin third-party actions
+  by SHA (not tag), minimise `permissions:` per job.
+
+`make lint` runs all of the above.
+
+### Adding a new check rule
+
+See [Adding new rules](#adding-new-rules) above for the full
+checklist (next sequential `MP###`/`OP###`/`SC###`/`CH###` ID, test
+fixture under `tests/`, README catalogue row, `remediation` string,
+minor-version bump).
+
+### Releasing
+
+Releases are operator-triggered, not automated. See
+[Publishing to Marketplace](#publishing-to-marketplace) for the full
+step-by-step (`release.yml` dispatch on `dev` with the desired tag —
+the workflow promotes the allowlisted file set from `dev` to `main`,
+tags `main`, and creates the GitHub Release).
 
 ## Security
 

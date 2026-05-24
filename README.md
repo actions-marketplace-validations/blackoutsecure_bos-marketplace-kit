@@ -126,6 +126,35 @@ bos-marketplace-kit/
 └── src/marketplace_kit/                # Python CLI
 ```
 
+### Composites vs `scripts/` — when to use which
+
+The kit ships **two** kinds of automation, and they answer different questions:
+
+| | `.github/actions/*` (composites) | `scripts/*.sh` (operator one-shots) |
+|---|---|---|
+| **Runs where?** | Inside a workflow, on every PR / push / release. | On your laptop, once per repo. |
+| **Auth?** | `GITHUB_TOKEN` (limited — `contents: read`, `pull-requests: write`, etc.). | Operator's `gh auth login` token, often with `admin:org` scope. |
+| **What it does** | Recurring, idempotent checks: validate manifest, lint, drift-detect branch protection, guard the publish surface. | Privileged bootstrap: create an org-level ruleset, configure classic branch protection. |
+| **Failure mode** | A red ❌ on the PR / commit. | A loud `exit 1` in the operator's terminal. |
+| **Frequency** | Every event. | Once, then forget — until your release-bot rotates. |
+
+Rule of thumb: if a maintainer needs to *re-grant* a scope to make
+it work, it lives in `scripts/`. Everything else is a composite.
+
+### A note on the bundled `_bp.py`
+
+The `branch-protection` composite ships an inline Python helper at
+`.github/actions/branch-protection/_bp.py`. It is **not** part of the
+PyPI package — it lives next to its consumer so that downstream users
+who pin the composite (`uses: blackoutsecure/bos-marketplace-kit/.github/actions/branch-protection@v1`)
+get the helper for free, with no `pip install` required.
+
+The composite invokes it as
+`python3 "${GITHUB_ACTION_PATH}/_bp.py" build|compare|parse-restrict`.
+The test suite imports it via `importlib.util.spec_from_file_location`
+in `tests/conftest.py` so it can exercise the same code paths the
+composite runs at action time.
+
 ## The dev → main publish model
 
 Marketplace publishing has one weird trick: the default branch must

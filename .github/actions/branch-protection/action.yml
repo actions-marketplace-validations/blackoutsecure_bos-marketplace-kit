@@ -272,77 +272,21 @@ runs:
         )
         STATUS_CHECKS_JSON="${STATUS_CHECKS_JSON:-[]}"
 
-        # Restrict-pushes is similarly normalised. Set to null when empty
-        # because the REST API rejects an empty object here.
+        # Restrict-pushes parsing is delegated to the testable Python
+        # helper module so the kit's bash and the bootstrap script can
+        # share the same DSL implementation.
         if [[ -n "${BP_RESTRICT_PUSHES// /}" ]]; then
-          RESTRICT_JSON=$(
-            python3 - <<'PY'
-        import os, json
-        raw = os.environ.get("BP_RESTRICT_PUSHES", "")
-        items = [x.strip() for x in raw.split(",") if x.strip()]
-        users, teams, apps = [], [], []
-        for it in items:
-            if it.startswith("team:"):
-                teams.append(it[5:])
-            elif it.startswith("app:"):
-                apps.append(it[4:])
-            else:
-                users.append(it)
-        print(json.dumps({"users": users, "teams": teams, "apps": apps}))
-        PY
-          )
+          RESTRICT_JSON="$(BP_RESTRICT_PUSHES="${BP_RESTRICT_PUSHES}" \
+            python3 "${GITHUB_ACTION_PATH}/_bp.py" parse-restrict)"
         else
           RESTRICT_JSON=null
         fi
 
         # ----- desired-state payload ------------------------------------
-        # Use python -c with env passthrough — avoids the gnarly bash
-        # quoting required for nested JSON construction.
-        DESIRED_JSON=$(
-          python3 - <<'PY'
-        import json, os
-        def b(name, default=False):
-            v = os.environ.get(name, "")
-            if v == "":
-                return default
-            return v.lower() == "true"
-        def i(name, default=None):
-            v = os.environ.get(name, "")
-            return int(v) if v.isdigit() else default
-        status_checks = json.loads(os.environ["STATUS_CHECKS_JSON"])
-        restrict = os.environ["RESTRICT_JSON"]
-        restrict = None if restrict == "null" else json.loads(restrict)
-        payload = {
-            "required_status_checks": {
-                "strict": b("BP_STATUS_CHECKS_STRICT", True),
-                "checks": status_checks,
-            } if status_checks or b("BP_STATUS_CHECKS_STRICT", True) else None,
-            "enforce_admins": b("BP_INCLUDE_ADMINS", False),
-            "required_pull_request_reviews": {
-                "dismiss_stale_reviews": b("BP_DISMISS_STALE", True),
-                "require_code_owner_reviews": b("BP_REQUIRE_CODEOWNER", True),
-                "required_approving_review_count":
-                    i("BP_REQUIRED_APPROVALS", 1),
-                "require_last_push_approval":
-                    b("BP_REQUIRE_LAST_PUSH_APPROVAL", False),
-            } if b("BP_REQUIRE_PR", True) else None,
-            "restrictions": restrict,
-            "required_linear_history":
-                b("BP_REQUIRE_LINEAR", True),
-            "allow_force_pushes":
-                not b("BP_NO_FORCE_PUSH", True),
-            "allow_deletions":
-                not b("BP_NO_DELETION", True),
-            "required_conversation_resolution":
-                b("BP_REQUIRE_CONVO", True),
-            "lock_branch":
-                b("BP_LOCK_BRANCH", False),
-            "required_signatures":
-                b("BP_REQUIRE_SIGNED", False),
-        }
-        print(json.dumps(payload, indent=2))
-        PY
-        )
+        # Delegate JSON shape construction to the bundled `_bp.py` so the
+        # composite's bash stays a thin orchestrator and the payload logic
+        # is unit-tested in `tests/test_bp.py`.
+        DESIRED_JSON="$(python3 "${GITHUB_ACTION_PATH}/_bp.py" build --pretty)"
 
         echo "Desired protection payload:" >&2
         echo "${DESIRED_JSON}" >&2
@@ -365,73 +309,15 @@ runs:
         fi
 
         # ----- diff -----------------------------------------------------
-        DRIFT=$(
-          DESIRED_JSON="${DESIRED_JSON}" \
-          python3 - "${CURRENT_JSON}" <<'PY'
-        import json, os, sys
-        with open(sys.argv[1]) as f:
-            cur = json.load(f)
-        des = json.loads(os.environ["DESIRED_JSON"])
-        findings = []
-        def get(obj, path, default=None):
-            for p in path:
-                if obj is None: return default
-                obj = obj.get(p, default) if isinstance(obj, dict) else default
-            return obj
-        # PR reviews
-        if des.get("required_pull_request_reviews") is not None:
-            d = des["required_pull_request_reviews"]
-            for k in ("dismiss_stale_reviews", "require_code_owner_reviews",
-                     "required_approving_review_count",
-                     "require_last_push_approval"):
-                want = d.get(k)
-                got = get(cur, ["required_pull_request_reviews", k])
-                if want is not None and want != got:
-                    findings.append(f"required_pull_request_reviews.{k}: want={want} got={got}")
-        elif get(cur, ["required_pull_request_reviews"]):
-            findings.append("required_pull_request_reviews: want=disabled got=enabled")
-        # Status checks
-        sc = des.get("required_status_checks")
-        if sc is not None:
-            want_strict = sc["strict"]
-            got_strict = get(cur, ["required_status_checks", "strict"])
-            if want_strict != got_strict:
-                findings.append(f"required_status_checks.strict: want={want_strict} got={got_strict}")
-            want_checks = sorted(c["context"] for c in sc["checks"])
-            got_checks = sorted(
-                get(cur, ["required_status_checks", "checks"], []) or [],
-                key=lambda x: x.get("context", "") if isinstance(x, dict) else x
-            )
-            got_ctxs = sorted([c["context"] if isinstance(c, dict) else c for c in got_checks])
-            if want_checks and want_checks != got_ctxs:
-                findings.append(f"required_status_checks.checks: want={want_checks} got={got_ctxs}")
-        # Booleans
-        for k_top in ("required_linear_history", "lock_branch"):
-            want = des.get(k_top)
-            got = (cur.get(k_top) or {}).get("enabled") if isinstance(cur.get(k_top), dict) else cur.get(k_top, False)
-            if want is not None and bool(want) != bool(got):
-                findings.append(f"{k_top}: want={want} got={got}")
-        # allow_force_pushes / allow_deletions are nested as {"enabled": bool}
-        for k_top in ("allow_force_pushes", "allow_deletions",
-                      "required_conversation_resolution", "required_signatures"):
-            want = des.get(k_top)
-            got_obj = cur.get(k_top)
-            got = got_obj.get("enabled") if isinstance(got_obj, dict) else bool(got_obj)
-            if want is not None and bool(want) != bool(got):
-                findings.append(f"{k_top}: want={want} got={got}")
-        # enforce_admins is a top-level object too on GET
-        if "enforce_admins" in des:
-            want = des["enforce_admins"]
-            got = (cur.get("enforce_admins") or {}).get("enabled") if isinstance(cur.get("enforce_admins"), dict) else cur.get("enforce_admins", False)
-            if bool(want) != bool(got):
-                findings.append(f"enforce_admins: want={want} got={got}")
-        if not findings:
-            print("__COMPLIANT__")
-        else:
-            for f in findings:
-                print(f)
-        PY
-        )
+        # Drift detection is delegated to the bundled `_bp.py` helper so
+        # that the rule set under test is identical to what the unit
+        # tests exercise. Write desired JSON to a temp file because the
+        # helper expects two paths.
+        DESIRED_PATH="${RUNNER_TEMP:-/tmp}/bp-desired.json"
+        printf '%s\n' "${DESIRED_JSON}" > "${DESIRED_PATH}"
+        DRIFT="$(python3 "${GITHUB_ACTION_PATH}/_bp.py" compare \
+          --desired "${DESIRED_PATH}" \
+          --current "${CURRENT_JSON}")"
 
         SUMMARY="${RUNNER_TEMP:-/tmp}/bp-summary.md"
         : > "${SUMMARY}"

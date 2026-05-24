@@ -29,10 +29,19 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
+    "pyyaml>=6.0",
 ]
 
 [project.scripts]
 marketplace-kit = "marketplace_kit.cli:main"
+
+[tool.pytest.ini_options]
+# Lets contributors run the suite without `pip install -e .`. CI still
+# installs the package editable so the console-script entrypoint
+# (`marketplace-kit`) is also exercised end-to-end.
+pythonpath = ["src"]
+testpaths = ["tests"]
+addopts = "-ra"
 
 [project.urls]
 Homepage = "https://github.com/blackoutsecure/bos-marketplace-kit"

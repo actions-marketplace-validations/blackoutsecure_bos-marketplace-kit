@@ -1,0 +1,21 @@
+# shellcheck configuration for blackoutsecure/bos-marketplace-kit.
+#
+# Composite action `run:` blocks are invoked by GitHub Actions runners
+# with bash, so we tell shellcheck to assume that interpreter regardless
+# of any missing shebang in extracted snippets.
+#
+# Disabled checks:
+#   SC2016 — Expressions don't expand in single quotes. We deliberately
+#            single-quote ${{ github.* }} so the runner expands them, not
+#            the shell. Disabling avoids false positives across all the
+#            composites.
+#   SC1091 — Not following sourced file. Our composites source _lib/lib.sh
+#            from a relative path that shellcheck can't resolve at lint
+#            time outside the action's runtime cwd.
+#
+# Mirror to src/marketplace_kit/data/policies/shellcheckrc if shipped
+# as a consumer template.
+
+shell=bash
+disable=SC2016,SC1091
+external-sources=true

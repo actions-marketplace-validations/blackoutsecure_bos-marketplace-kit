@@ -107,9 +107,17 @@ jobs:
             .github/actions/name-check
             .github/actions/branding-preview
             .github/actions/dist-check
+            .github/actions/lint
+            .github/actions/branch-protection
           extra_allowlist_paths: |
             .github/dependabot.yml
             .github/FUNDING.yml
+            .editorconfig
+            .gitattributes
+            .gitignore
+            .markdownlint.yaml
+            .yamllint.yml
+            .shellcheckrc
           tag_name:       ${{ inputs.tag_name }}
           commit_message: 'release: ${{ inputs.tag_name }}'
           dry_run:        ${{ inputs.dry_run }}

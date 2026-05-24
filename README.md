@@ -111,9 +111,12 @@ bos-marketplace-kit/
 │   ├── promote/                        # dev → main wipe-and-replay
 │   ├── name-check/                     # Marketplace name uniqueness
 │   ├── branding-preview/                # render the icon + colour SVG
-│   └── dist-check/                      # bundled-dist freshness check (JS Actions)
+│   ├── dist-check/                      # bundled-dist freshness check (JS Actions)
+│   ├── lint/                            # markdown/yaml/shell/actions linter
+│   └── branch-protection/               # branch-protection compliance (check + enforce)
 ├── .github/workflows/                  # dev-only CI; NEVER promoted to main
 │   ├── ci.yml                          # actionlint + shellcheck
+│   ├── codeql.yml                      # CodeQL static analysis
 │   ├── release.yml                     # dev → main promote + tag + release
 │   ├── self-check.yml                  # dogfood: check own action.yml
 │   └── self-guard.yml                  # dogfood: guard own PRs
@@ -391,6 +394,77 @@ because it is JS-specific and requires a Node toolchain on the
 runner. For non-npm projects, override `build_command` (e.g.
 `pnpm install --frozen-lockfile && pnpm build`).
 
+### Lint markdown / yaml / shell / actions (`lint`)
+
+The `lint` composite runs the four lint tools the kit ships configs
+for. Drop it as a dev-branch job:
+
+```yaml
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: blackoutsecure/bos-marketplace-kit/.github/actions/lint@v1
+        with:
+          severity: 'fail'        # 'warn' or 'skip' to downgrade
+          # All four linters on by default. Set false to opt out.
+          run_markdownlint: 'true'
+          run_yamllint:     'true'
+          run_shellcheck:   'true'
+          run_actionlint:   'true'
+```
+
+The composite auto-detects file globs (`**/*.md`, `**/*.yml`,
+`**/*.sh`, `.github/workflows/**/*.yml`), installs each tool on
+demand with pinned versions (markdownlint-cli2 `0.18.1`, yamllint
+`1.37.0`, actionlint `v1.7.7`; shellcheck is preinstalled on
+`ubuntu-latest`), and emits a markdown table to the job summary.
+
+Need configs? `marketplace-kit generate-policy markdownlint`,
+`yamllint`, or `shellcheckrc`.
+
+### Branch-protection compliance (`branch-protection`)
+
+The `branch-protection` composite has two modes:
+
+* **`check`** (default, safe): read the current branch-protection
+  state via `GET /repos/{}/branches/{branch}/protection` and report
+  drift against your declared intent. No write permissions needed.
+* **`enforce`**: `PUT` the declared intent (idempotent). Requires a
+  token with `Administration: write`.
+
+```yaml
+jobs:
+  branch-protection-compliance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: blackoutsecure/bos-marketplace-kit/.github/actions/branch-protection@v1
+        with:
+          github_token: ${{ github.token }}
+          mode: 'check'          # 'enforce' to apply
+          severity: 'warn'       # 'fail' to break PRs on drift
+          branch: 'main'
+          bp_require_pull_request:     'true'
+          bp_required_approvals:       '1'
+          bp_no_force_push:            'true'
+          bp_no_deletion:              'true'
+          bp_require_linear_history:   'true'
+          bp_require_signed_commits:   'false'
+          bp_required_status_checks: |
+            check
+            guard
+          bp_required_strict_status_checks: 'true'
+          # `include_administrators` defaults to false (solo-maintainer
+          # friendly). Set true when you want EVERYONE to need a PR.
+          bp_include_administrators: 'false'
+```
+
+The composite outputs `is_compliant`, `drift_summary` (multi-line),
+and `mode_applied`. Use these to gate downstream jobs or post a
+summary comment.
+
 ## Publishing to Marketplace
 
 This section walks you through publishing a Marketplace-listed Action
@@ -611,6 +685,12 @@ Rule families:
 | `OP###` | Warning    | Best-practice violation. Non-fatal by default; set `fail_on_warning: true` to promote. |
 | `SC###` | **Fatal**  | Security-impacting default missing. Failure indicates a supply-chain or token-exposure risk. |
 | `CH###` | Configurable | Community-health file missing. Default `warn` or `skip` per file; promote to `fail` via the matching `require_*` input. |
+| `DP###` | Configurable | Dependabot config missing. Default `warn`. |
+| `CQ###` | Configurable | CodeQL workflow missing. Default `warn`. |
+| `LT###` | Configurable | Lint config file missing (`.editorconfig`, `.gitattributes`, `.gitignore`, markdownlint, yamllint). |
+| `GH###` | Configurable | GitHub Advanced Security toggle disabled (code scanning, secret scanning, Dependabot alerts). Requires `github_token`. |
+| `MS###` | Configurable | Microsoft Security DevOps workflow missing. Default `skip` (opt-in). |
+| `SR###` | Configurable | OpenSSF Scorecard workflow missing. Default `skip` (opt-in). |
 
 ### MP001 — Top-level manifest keys
 
@@ -903,6 +983,76 @@ emits a one-time warning and otherwise has no effect. Existing
 callers don't need to change anything once the implementation lands.
 The static `marketplace-kit generate-policy` command continues to
 work today and is the supported way to bootstrap a file.
+
+### DP001 / CQ001 / LT001-005 — CI / supply-chain hygiene
+
+Adjacent to the community-health rules, the kit checks for the
+standard supply-chain and lint config files a healthy Marketplace
+repo should ship. These follow the same `fail | warn | skip` policy
+pattern and the same generator-template story (`marketplace-kit
+generate-policy <kind>`).
+
+| ID    | File(s)                                                                    | Default policy | Generator kind             |
+|-------|----------------------------------------------------------------------------|----------------|----------------------------|
+| DP001 | `.github/dependabot.yml` / `.dependabot.yaml`                              | `warn`         | `dependabot`               |
+| CQ001 | any workflow referencing `github/codeql-action`                            | `warn`         | `codeql-workflow`          |
+| LT001 | `.editorconfig`                                                            | `warn`         | (no template; trivial)     |
+| LT002 | `.gitattributes`                                                           | `warn`         | (no template; repo-shaped) |
+| LT003 | `.gitignore`                                                               | `warn`         | (no template; repo-shaped) |
+| LT004 | `.markdownlint.yaml` / `.markdownlint-cli2.yaml` / `.markdownlint.json`    | `skip`         | `markdownlint`             |
+| LT005 | `.yamllint.yml` / `.yamllint.yaml` / `.yamllint`                           | `skip`         | `yamllint`                 |
+
+The lint rules default to `skip` (LT004/LT005) or `warn` (LT001-003)
+so legacy repos can adopt the kit without immediate cleanup. Promote
+to `fail` as your repo catches up.
+
+### GH001-GH003 — GitHub Advanced Security toggles (live repo settings)
+
+These rules call the GitHub API to verify your repo-level security
+toggles are actually enabled — surfacing drift between intent ("we
+turned on secret scanning") and reality. Each requires `github_token`
+with the appropriate scope.
+
+| ID    | Setting                              | API                                                                    | Token scope             | Default |
+|-------|--------------------------------------|------------------------------------------------------------------------|-------------------------|---------|
+| GH001 | Code scanning (CodeQL default-setup OR workflow) | `GET /repos/{}/code-scanning/default-setup`                | `metadata: read`        | `warn`  |
+| GH002 | Secret scanning                      | `GET /repos/{}` → `security_and_analysis.secret_scanning.status`        | `metadata: read`        | `warn`  |
+| GH003 | Dependabot alerts                    | `GET /repos/{}/vulnerability-alerts` (204/404)                          | `Administration: read`  | `warn`  |
+
+**Public repos:** all three features are free; default-on for new
+repos created after 2023 and recommended for everything else.
+
+**Private repos:** require a GitHub Advanced Security license. Set
+`require_ghas_*: skip` if you're on a plan without GHAS.
+
+If the token lacks scope the rule emits `skip` (not `fail`) with an
+explanation, so a missing `Administration: read` doesn't silently
+mask the broader check.
+
+### MS001 — Microsoft Security DevOps workflow (opt-in)
+
+`microsoft/security-devops-action` wraps a curated set of OSS scanners
+(Bandit, Checkov, ESLint, Terrascan, Trivy, BinSkim, PSRule, …) and
+surfaces findings as SARIF in GHAS code-scanning. For Azure-connected
+repos, findings also flow into Microsoft Defender for Cloud.
+
+* **Default:** `skip` — high signal for repos shipping IaC or
+  container images, marginal noise for pure source repos.
+* **Generator:** `marketplace-kit generate-policy security-devops-workflow`.
+* Set `require_security_devops: warn` (or `fail`) for IaC-heavy or
+  containerised repos.
+
+### SR001 — OpenSSF Scorecard workflow (opt-in)
+
+`ossf/scorecard-action` scores your repo's supply-chain posture
+against the OpenSSF Scorecard checks (Branch-Protection, Pinned-Deps,
+Token-Permissions, etc.) and publishes the result at
+<https://scorecard.dev>. Free for public repos.
+
+* **Default:** `skip`.
+* **Generator:** `marketplace-kit generate-policy scorecard-workflow`.
+* Recommended for public Marketplace actions — your Scorecard becomes
+  a public quality signal alongside the Marketplace listing.
 
 ### Adding new rules
 

@@ -1,0 +1,494 @@
+name: Branch protection
+description: >-
+  Verify and optionally apply GitHub branch-protection settings for
+  Marketplace Action repositories. Replicates the GUI flow at
+  Settings → Branches → Branch protection rule via the REST API
+  (`PUT /repos/{owner}/{repo}/branches/{branch}/protection`), so the
+  same configuration that ships in this file is auditable in the
+  same job as the rest of the kit's pre-publish checks.
+
+  Two execution modes:
+
+    * `check`  — read the current protection on the target branch
+                 and diff against the requested settings; emit
+                 findings at the configured `severity`. Default.
+                 SAFE: never mutates the repository.
+    * `enforce` — issue a PUT request that overwrites protection on
+                 the target branch to match the requested settings.
+                 INTRUSIVE: requires a token with `Administration:
+                 write` scope (PAT, fine-grained PAT, or App token).
+                 Not granted by the default `GITHUB_TOKEN`.
+
+  Every individual setting has a corresponding `bp_*` input so a
+  consumer can opt out of any specific rule without forking. Defaults
+  reflect what we recommend for a public Marketplace Action `main`
+  branch:
+
+    * Require pull-request reviews:                        1 approval
+    * Dismiss stale approvals on new commits:              on
+    * Require review from CODEOWNERS:                      on (only if
+                                                              a CODEOWNERS
+                                                              file is present
+                                                              on default branch)
+    * Require status checks to pass:                       on (configurable list)
+    * Require branches to be up-to-date before merge:      on
+    * Require conversation resolution:                     on
+    * Require signed commits:                              off (opt-in)
+    * Require linear history:                              on
+    * Require deployments to succeed:                      off
+    * Lock branch (read-only):                             off
+    * Allow force pushes:                                  off (no_force_push=true)
+    * Allow deletions:                                     off (no_deletion=true)
+    * Enforce for admins (include_administrators):         off (solo-maintainer
+                                                              friendly; toggle
+                                                              on for stricter
+                                                              org policy)
+    * Restrict who can push:                               off (open-source
+                                                              friendly)
+
+  Returns `is_compliant=true|false` so a calling workflow can branch
+  on it (e.g. open a follow-up issue if drift is found and severity
+  is set to `warn`).
+
+inputs:
+  mode:
+    description: >-
+      `check` (default) or `enforce`. See description for semantics.
+    required: false
+    default: 'check'
+
+  branch:
+    description: >-
+      Branch to operate on. Default `main` because Marketplace
+      publishing pins to the default branch and that is the branch
+      that needs protection. Override only if your repository uses
+      a non-standard default.
+    required: false
+    default: 'main'
+
+  github_token:
+    description: >-
+      Token used to call the REST API. For `check` mode the default
+      `${{ secrets.GITHUB_TOKEN }}` is sufficient. For `enforce` mode
+      the token MUST have `Administration: write` on the repository
+      (provide a fine-grained PAT or GitHub App token via
+      `${{ secrets.<NAME> }}`).
+    required: true
+
+  severity:
+    description: >-
+      In `check` mode, how to report drift:
+        * `fail`  — exit non-zero when any requested setting differs.
+        * `warn`  — annotate findings, exit 0.
+        * `skip`  — do nothing (useful for short-circuiting in
+                    matrices).
+      Ignored in `enforce` mode (any PUT failure is a hard error).
+    required: false
+    default: 'fail'
+
+  # --------------------------- individual rules ---------------------------
+  # An empty string means "do not assert this rule" (no opinion).
+  # A boolean string ("true"/"false") asserts the requested state.
+  # An integer string for review counts asserts the requested minimum.
+
+  bp_require_pull_request:
+    description: Require pull requests before merging into the protected branch.
+    required: false
+    default: 'true'
+
+  bp_required_approvals:
+    description: >-
+      Minimum number of approving reviews. `0` disables the review
+      requirement (but the PR gate may still be present via
+      bp_require_pull_request).
+    required: false
+    default: '1'
+
+  bp_dismiss_stale_reviews:
+    description: Dismiss approvals when new commits are pushed.
+    required: false
+    default: 'true'
+
+  bp_require_codeowner_review:
+    description: >-
+      Require an approving review from CODEOWNERS. Effective only
+      when a CODEOWNERS file exists on the default branch — GitHub
+      will silently ignore the bit otherwise.
+    required: false
+    default: 'true'
+
+  bp_require_last_push_approval:
+    description: >-
+      Require an approval on the most recent push (Beta feature on
+      GitHub; harmless to set if unsupported on the plan).
+    required: false
+    default: 'false'
+
+  bp_required_status_checks:
+    description: >-
+      Newline- or comma-separated list of status-check context names
+      that MUST pass before merge. Examples: `CI`, `actionlint`,
+      `dist-check`. Leave empty to require no specific checks (the
+      bit `strict` is still set per bp_required_strict_status_checks).
+    required: false
+    default: ''
+
+  bp_required_strict_status_checks:
+    description: >-
+      Require branches to be up to date with the base branch before
+      merging (the "strict" bit on required status checks).
+    required: false
+    default: 'true'
+
+  bp_require_signed_commits:
+    description: Require signatures on every commit on the protected branch.
+    required: false
+    default: 'false'
+
+  bp_require_linear_history:
+    description: Require a linear history (no merge commits).
+    required: false
+    default: 'true'
+
+  bp_require_conversation_resolution:
+    description: Require all PR conversations to be resolved before merge.
+    required: false
+    default: 'true'
+
+  bp_no_force_push:
+    description: >-
+      Disallow force pushes onto the protected branch. (REST API
+      field: `allow_force_pushes.enabled = !bp_no_force_push`.)
+    required: false
+    default: 'true'
+
+  bp_no_deletion:
+    description: >-
+      Disallow deletion of the protected branch. (REST API field:
+      `allow_deletions.enabled = !bp_no_deletion`.)
+    required: false
+    default: 'true'
+
+  bp_lock_branch:
+    description: >-
+      Make the branch read-only. Almost never wanted on the active
+      `main` branch; included for completeness.
+    required: false
+    default: 'false'
+
+  bp_include_administrators:
+    description: >-
+      Apply the protection to administrators too. Default `false`
+      so a solo maintainer can still ship hotfixes without breaking
+      glass via the GitHub UI; consider `true` for stricter org
+      policy.
+    required: false
+    default: 'false'
+
+  bp_restrict_pushes:
+    description: >-
+      Comma-separated list of user/team slugs allowed to push to the
+      protected branch. Leave empty for open-source-friendly default
+      (anyone with write can open a PR; nobody pushes directly).
+    required: false
+    default: ''
+
+outputs:
+  is_compliant:
+    description: '`true` when current protection matches all asserted settings.'
+    value: ${{ steps.run.outputs.is_compliant }}
+  drift_summary:
+    description: Multiline summary of detected drift (empty if compliant).
+    value: ${{ steps.run.outputs.drift_summary }}
+  mode_applied:
+    description: '`check` or `enforce`, echoing what ran.'
+    value: ${{ steps.run.outputs.mode_applied }}
+
+runs:
+  using: composite
+  steps:
+    - name: Branch protection
+      id: run
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+        BP_MODE: ${{ inputs.mode }}
+        BP_BRANCH: ${{ inputs.branch }}
+        BP_SEVERITY: ${{ inputs.severity }}
+        BP_REQUIRE_PR: ${{ inputs.bp_require_pull_request }}
+        BP_REQUIRED_APPROVALS: ${{ inputs.bp_required_approvals }}
+        BP_DISMISS_STALE: ${{ inputs.bp_dismiss_stale_reviews }}
+        BP_REQUIRE_CODEOWNER: ${{ inputs.bp_require_codeowner_review }}
+        BP_REQUIRE_LAST_PUSH_APPROVAL: ${{ inputs.bp_require_last_push_approval }}
+        BP_STATUS_CHECKS: ${{ inputs.bp_required_status_checks }}
+        BP_STATUS_CHECKS_STRICT: ${{ inputs.bp_required_strict_status_checks }}
+        BP_REQUIRE_SIGNED: ${{ inputs.bp_require_signed_commits }}
+        BP_REQUIRE_LINEAR: ${{ inputs.bp_require_linear_history }}
+        BP_REQUIRE_CONVO: ${{ inputs.bp_require_conversation_resolution }}
+        BP_NO_FORCE_PUSH: ${{ inputs.bp_no_force_push }}
+        BP_NO_DELETION: ${{ inputs.bp_no_deletion }}
+        BP_LOCK_BRANCH: ${{ inputs.bp_lock_branch }}
+        BP_INCLUDE_ADMINS: ${{ inputs.bp_include_administrators }}
+        BP_RESTRICT_PUSHES: ${{ inputs.bp_restrict_pushes }}
+        REPO: ${{ github.repository }}
+      run: |
+        set -euo pipefail
+
+        die()  { printf '::error::%s\n' "$*" >&2; exit 1; }
+        warn() { printf '::warning::%s\n' "$*" >&2; }
+        info() { printf '::notice::%s\n' "$*" >&2; }
+
+        # ----- preflight -------------------------------------------------
+        case "${BP_MODE}" in
+          check|enforce) : ;;
+          *) die "invalid mode='${BP_MODE}'; expected check|enforce" ;;
+        esac
+        case "${BP_SEVERITY}" in
+          fail|warn|skip) : ;;
+          *) die "invalid severity='${BP_SEVERITY}'; expected fail|warn|skip" ;;
+        esac
+        [[ -n "${GH_TOKEN}" ]] || die "github_token is required"
+        command -v gh >/dev/null 2>&1 || die "gh CLI not on PATH (preinstalled on GitHub-hosted runners)"
+        command -v jq >/dev/null 2>&1 || die "jq not on PATH"
+
+        if [[ "${BP_SEVERITY}" == "skip" && "${BP_MODE}" == "check" ]]; then
+          info "branch-protection skipped (severity=skip in check mode)"
+          {
+            echo "is_compliant=true"
+            echo "mode_applied=skip"
+            printf 'drift_summary<<__EOF__\n__EOF__\n'
+          } >> "${GITHUB_OUTPUT}"
+          exit 0
+        fi
+
+        # Normalise status-check list (CSV or newline) → JSON array.
+        # Empty input becomes [].
+        STATUS_CHECKS_JSON=$(
+          printf '%s\n' "${BP_STATUS_CHECKS}" \
+            | tr ',' '\n' \
+            | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' \
+            | grep -v '^$' \
+            | jq -R -s -c 'split("\n") | map(select(length>0)) | map({context: ., app_id: null})'
+        )
+        STATUS_CHECKS_JSON="${STATUS_CHECKS_JSON:-[]}"
+
+        # Restrict-pushes is similarly normalised. Set to null when empty
+        # because the REST API rejects an empty object here.
+        if [[ -n "${BP_RESTRICT_PUSHES// /}" ]]; then
+          RESTRICT_JSON=$(
+            python3 - <<'PY'
+        import os, json
+        raw = os.environ.get("BP_RESTRICT_PUSHES", "")
+        items = [x.strip() for x in raw.split(",") if x.strip()]
+        users, teams, apps = [], [], []
+        for it in items:
+            if it.startswith("team:"):
+                teams.append(it[5:])
+            elif it.startswith("app:"):
+                apps.append(it[4:])
+            else:
+                users.append(it)
+        print(json.dumps({"users": users, "teams": teams, "apps": apps}))
+        PY
+          )
+        else
+          RESTRICT_JSON=null
+        fi
+
+        # ----- desired-state payload ------------------------------------
+        # Use python -c with env passthrough — avoids the gnarly bash
+        # quoting required for nested JSON construction.
+        DESIRED_JSON=$(
+          python3 - <<'PY'
+        import json, os
+        def b(name, default=False):
+            v = os.environ.get(name, "")
+            if v == "":
+                return default
+            return v.lower() == "true"
+        def i(name, default=None):
+            v = os.environ.get(name, "")
+            return int(v) if v.isdigit() else default
+        status_checks = json.loads(os.environ["STATUS_CHECKS_JSON"])
+        restrict = os.environ["RESTRICT_JSON"]
+        restrict = None if restrict == "null" else json.loads(restrict)
+        payload = {
+            "required_status_checks": {
+                "strict": b("BP_STATUS_CHECKS_STRICT", True),
+                "checks": status_checks,
+            } if status_checks or b("BP_STATUS_CHECKS_STRICT", True) else None,
+            "enforce_admins": b("BP_INCLUDE_ADMINS", False),
+            "required_pull_request_reviews": {
+                "dismiss_stale_reviews": b("BP_DISMISS_STALE", True),
+                "require_code_owner_reviews": b("BP_REQUIRE_CODEOWNER", True),
+                "required_approving_review_count":
+                    i("BP_REQUIRED_APPROVALS", 1),
+                "require_last_push_approval":
+                    b("BP_REQUIRE_LAST_PUSH_APPROVAL", False),
+            } if b("BP_REQUIRE_PR", True) else None,
+            "restrictions": restrict,
+            "required_linear_history":
+                b("BP_REQUIRE_LINEAR", True),
+            "allow_force_pushes":
+                not b("BP_NO_FORCE_PUSH", True),
+            "allow_deletions":
+                not b("BP_NO_DELETION", True),
+            "required_conversation_resolution":
+                b("BP_REQUIRE_CONVO", True),
+            "lock_branch":
+                b("BP_LOCK_BRANCH", False),
+            "required_signatures":
+                b("BP_REQUIRE_SIGNED", False),
+        }
+        print(json.dumps(payload, indent=2))
+        PY
+        )
+
+        echo "Desired protection payload:" >&2
+        echo "${DESIRED_JSON}" >&2
+
+        # ----- current state --------------------------------------------
+        info "fetching current protection on ${REPO}@${BP_BRANCH}"
+        CURRENT_JSON="${RUNNER_TEMP:-/tmp}/bp-current.json"
+        HTTP_CODE=$(
+          curl -sS -o "${CURRENT_JSON}" -w '%{http_code}' \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${REPO}/branches/${BP_BRANCH}/protection"
+        )
+        if [[ "${HTTP_CODE}" == "404" ]]; then
+          warn "no branch protection on ${BP_BRANCH} (HTTP 404)"
+          echo '{}' > "${CURRENT_JSON}"
+        elif [[ "${HTTP_CODE:0:1}" != "2" ]]; then
+          die "GET protection failed: HTTP ${HTTP_CODE}: $(cat "${CURRENT_JSON}")"
+        fi
+
+        # ----- diff -----------------------------------------------------
+        DRIFT=$(
+          DESIRED_JSON="${DESIRED_JSON}" \
+          python3 - "${CURRENT_JSON}" <<'PY'
+        import json, os, sys
+        with open(sys.argv[1]) as f:
+            cur = json.load(f)
+        des = json.loads(os.environ["DESIRED_JSON"])
+        findings = []
+        def get(obj, path, default=None):
+            for p in path:
+                if obj is None: return default
+                obj = obj.get(p, default) if isinstance(obj, dict) else default
+            return obj
+        # PR reviews
+        if des.get("required_pull_request_reviews") is not None:
+            d = des["required_pull_request_reviews"]
+            for k in ("dismiss_stale_reviews", "require_code_owner_reviews",
+                     "required_approving_review_count",
+                     "require_last_push_approval"):
+                want = d.get(k)
+                got = get(cur, ["required_pull_request_reviews", k])
+                if want is not None and want != got:
+                    findings.append(f"required_pull_request_reviews.{k}: want={want} got={got}")
+        elif get(cur, ["required_pull_request_reviews"]):
+            findings.append("required_pull_request_reviews: want=disabled got=enabled")
+        # Status checks
+        sc = des.get("required_status_checks")
+        if sc is not None:
+            want_strict = sc["strict"]
+            got_strict = get(cur, ["required_status_checks", "strict"])
+            if want_strict != got_strict:
+                findings.append(f"required_status_checks.strict: want={want_strict} got={got_strict}")
+            want_checks = sorted(c["context"] for c in sc["checks"])
+            got_checks = sorted(
+                get(cur, ["required_status_checks", "checks"], []) or [],
+                key=lambda x: x.get("context", "") if isinstance(x, dict) else x
+            )
+            got_ctxs = sorted([c["context"] if isinstance(c, dict) else c for c in got_checks])
+            if want_checks and want_checks != got_ctxs:
+                findings.append(f"required_status_checks.checks: want={want_checks} got={got_ctxs}")
+        # Booleans
+        for k_top in ("required_linear_history", "lock_branch"):
+            want = des.get(k_top)
+            got = (cur.get(k_top) or {}).get("enabled") if isinstance(cur.get(k_top), dict) else cur.get(k_top, False)
+            if want is not None and bool(want) != bool(got):
+                findings.append(f"{k_top}: want={want} got={got}")
+        # allow_force_pushes / allow_deletions are nested as {"enabled": bool}
+        for k_top in ("allow_force_pushes", "allow_deletions",
+                      "required_conversation_resolution", "required_signatures"):
+            want = des.get(k_top)
+            got_obj = cur.get(k_top)
+            got = got_obj.get("enabled") if isinstance(got_obj, dict) else bool(got_obj)
+            if want is not None and bool(want) != bool(got):
+                findings.append(f"{k_top}: want={want} got={got}")
+        # enforce_admins is a top-level object too on GET
+        if "enforce_admins" in des:
+            want = des["enforce_admins"]
+            got = (cur.get("enforce_admins") or {}).get("enabled") if isinstance(cur.get("enforce_admins"), dict) else cur.get("enforce_admins", False)
+            if bool(want) != bool(got):
+                findings.append(f"enforce_admins: want={want} got={got}")
+        if not findings:
+            print("__COMPLIANT__")
+        else:
+            for f in findings:
+                print(f)
+        PY
+        )
+
+        SUMMARY="${RUNNER_TEMP:-/tmp}/bp-summary.md"
+        : > "${SUMMARY}"
+        echo "## Branch protection" >> "${SUMMARY}"
+        echo "" >> "${SUMMARY}"
+        echo "Repository: \`${REPO}\`  •  Branch: \`${BP_BRANCH}\`  •  Mode: \`${BP_MODE}\`" >> "${SUMMARY}"
+        echo "" >> "${SUMMARY}"
+
+        if [[ "${DRIFT}" == "__COMPLIANT__" ]]; then
+          IS_COMPLIANT=true
+          echo "✅ All asserted settings match." >> "${SUMMARY}"
+        else
+          IS_COMPLIANT=false
+          echo "❌ Drift detected:" >> "${SUMMARY}"
+          echo "" >> "${SUMMARY}"
+          echo '```' >> "${SUMMARY}"
+          echo "${DRIFT}" >> "${SUMMARY}"
+          echo '```' >> "${SUMMARY}"
+        fi
+
+        # ----- enforce (optional mutation) ------------------------------
+        if [[ "${BP_MODE}" == "enforce" ]]; then
+          info "PUT /repos/${REPO}/branches/${BP_BRANCH}/protection"
+          PUT_OUT="${RUNNER_TEMP:-/tmp}/bp-put.json"
+          PUT_CODE=$(
+            curl -sS -o "${PUT_OUT}" -w '%{http_code}' \
+              -X PUT \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              -d "${DESIRED_JSON}" \
+              "https://api.github.com/repos/${REPO}/branches/${BP_BRANCH}/protection"
+          )
+          if [[ "${PUT_CODE:0:1}" != "2" ]]; then
+            cat "${PUT_OUT}" >&2 || true
+            die "PUT protection failed: HTTP ${PUT_CODE}. Confirm the token has Administration:write."
+          fi
+          IS_COMPLIANT=true
+          echo "" >> "${SUMMARY}"
+          echo "🔒 Protection applied (HTTP ${PUT_CODE})." >> "${SUMMARY}"
+        fi
+
+        # ----- finalise --------------------------------------------------
+        if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+          cat "${SUMMARY}" >> "${GITHUB_STEP_SUMMARY}"
+        fi
+
+        {
+          echo "is_compliant=${IS_COMPLIANT}"
+          echo "mode_applied=${BP_MODE}"
+          printf 'drift_summary<<__EOF__\n%s\n__EOF__\n' "${DRIFT}"
+        } >> "${GITHUB_OUTPUT}"
+
+        if [[ "${IS_COMPLIANT}" != "true" && "${BP_MODE}" == "check" && "${BP_SEVERITY}" == "fail" ]]; then
+          die "branch-protection drift detected; see job summary"
+        elif [[ "${IS_COMPLIANT}" != "true" && "${BP_MODE}" == "check" ]]; then
+          warn "branch-protection drift detected (severity=${BP_SEVERITY})"
+        else
+          info "branch-protection OK"
+        fi

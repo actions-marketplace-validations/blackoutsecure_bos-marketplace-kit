@@ -466,6 +466,14 @@ POLICY_KINDS: dict[str, tuple[str, str, str]] = {
     "issue-feature":    ("issue-template-feature.md",   ".github/ISSUE_TEMPLATE/feature_request.md", "Feature-request issue template"),
     "pr-template":      ("pull-request-template.md",    ".github/PULL_REQUEST_TEMPLATE.md",          "Pull-request template"),
     "funding":          ("funding.yml",                 ".github/FUNDING.yml",                       "Funding manifest"),
+    # CI / supply-chain (v0.2.0+).
+    "dependabot":               ("dependabot.yml",                ".github/dependabot.yml",                  "Dependabot config"),
+    "codeql-workflow":          ("codeql-workflow.yml",           ".github/workflows/codeql.yml",            "CodeQL workflow"),
+    "scorecard-workflow":       ("scorecard-workflow.yml",        ".github/workflows/scorecard.yml",         "OpenSSF Scorecard workflow"),
+    "security-devops-workflow": ("security-devops-workflow.yml",  ".github/workflows/security-devops.yml",   "MS Security DevOps workflow"),
+    "markdownlint":             ("markdownlint.yaml",             ".markdownlint.yaml",                      "markdownlint config"),
+    "yamllint":                 ("yamllint.yml",                  ".yamllint.yml",                           "yamllint config"),
+    "shellcheckrc":             ("shellcheckrc",                  ".shellcheckrc",                           "shellcheck config"),
 }
 
 

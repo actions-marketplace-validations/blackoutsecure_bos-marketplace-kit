@@ -200,6 +200,81 @@ inputs:
     required: false
     default: 'false'
 
+  # ----- DP/CQ/LT/GH/MS/SR rule policies ----------------------------------
+  # Same `fail|warn|skip` semantics as the CH/SC rules above.
+  # Defaults are chosen to be back-compat: new rules default to `warn`
+  # (visible but not blocking) so adding the kit to an existing repo
+  # doesn't break its CI on the first run.
+
+  require_dependabot:
+    description: 'Policy for `.github/dependabot.yml` presence (DP001). One of `fail`, `warn`, `skip`. Default `warn`.'
+    required: false
+    default: 'warn'
+  require_codeql:
+    description: 'Policy for a CodeQL workflow (CQ001). One of `fail`, `warn`, `skip`. Default `warn`.'
+    required: false
+    default: 'warn'
+  require_editorconfig:
+    description: 'Policy for `.editorconfig` presence (LT001). One of `fail`, `warn`, `skip`. Default `warn`.'
+    required: false
+    default: 'warn'
+  require_gitattributes:
+    description: 'Policy for `.gitattributes` presence (LT002). One of `fail`, `warn`, `skip`. Default `warn`.'
+    required: false
+    default: 'warn'
+  require_gitignore:
+    description: 'Policy for `.gitignore` presence (LT003). One of `fail`, `warn`, `skip`. Default `warn`.'
+    required: false
+    default: 'warn'
+  require_markdownlint:
+    description: 'Policy for `.markdownlint.yaml`/`.markdownlint-cli2.yaml` presence (LT004). One of `fail`, `warn`, `skip`. Default `skip`.'
+    required: false
+    default: 'skip'
+  require_yamllint:
+    description: 'Policy for `.yamllint.yml`/`.yamllint.yaml` presence (LT005). One of `fail`, `warn`, `skip`. Default `skip`.'
+    required: false
+    default: 'skip'
+  require_ghas_code_scanning:
+    description: >-
+      Policy for "Code scanning" being enabled at the repo level
+      (GH001). One of `fail`, `warn`, `skip`. Requires `github_token`
+      with `metadata: read`. Default `warn`. CodeQL is free on public
+      repos — leave this at `warn` or higher to catch the listing
+      drifting out of compliance.
+    required: false
+    default: 'warn'
+  require_ghas_secret_scanning:
+    description: >-
+      Policy for "Secret scanning" being enabled at the repo level
+      (GH002). Requires `github_token`. Default `warn`. Free on public
+      repos. Set `skip` for private repos without GHAS licensing.
+    required: false
+    default: 'warn'
+  require_dependabot_alerts:
+    description: >-
+      Policy for "Dependabot alerts" being enabled at the repo level
+      (GH003). Requires `github_token` with `Administration: read`
+      (the alerts endpoint is admin-scoped). Default `warn`.
+    required: false
+    default: 'warn'
+  require_security_devops:
+    description: >-
+      Policy for the Microsoft Security DevOps workflow being present
+      (MS001). One of `fail`, `warn`, `skip`. Default `skip` — opt in
+      when your repo ships IaC or container images that benefit from
+      Trivy/Checkov/Terrascan via the
+      `microsoft/security-devops-action` wrapper.
+    required: false
+    default: 'skip'
+  require_scorecard:
+    description: >-
+      Policy for the OpenSSF Scorecard workflow being present (SR001).
+      One of `fail`, `warn`, `skip`. Default `skip` — opt in when you
+      want your repo scored at https://scorecard.dev. Free for public
+      repos; produces a SARIF report uploaded to GHAS.
+    required: false
+    default: 'skip'
+
 outputs:
   passed:
     description: 'Number of checks that passed.'
@@ -273,6 +348,19 @@ runs:
         SRC_PR_TEMPLATE:     ${{ inputs.pr_template_source }}
         SRC_FUNDING:         ${{ inputs.funding_source }}
         AUTO_GENERATE_MISSING: ${{ inputs.auto_generate_missing }}
+        REQ_DEPENDABOT:           ${{ inputs.require_dependabot }}
+        REQ_CODEQL:               ${{ inputs.require_codeql }}
+        REQ_EDITORCONFIG:         ${{ inputs.require_editorconfig }}
+        REQ_GITATTRIBUTES:        ${{ inputs.require_gitattributes }}
+        REQ_GITIGNORE:            ${{ inputs.require_gitignore }}
+        REQ_MARKDOWNLINT:         ${{ inputs.require_markdownlint }}
+        REQ_YAMLLINT:             ${{ inputs.require_yamllint }}
+        REQ_GHAS_CODE_SCANNING:   ${{ inputs.require_ghas_code_scanning }}
+        REQ_GHAS_SECRET_SCANNING: ${{ inputs.require_ghas_secret_scanning }}
+        REQ_DEPENDABOT_ALERTS:    ${{ inputs.require_dependabot_alerts }}
+        REQ_SECURITY_DEVOPS:      ${{ inputs.require_security_devops }}
+        REQ_SCORECARD:            ${{ inputs.require_scorecard }}
+        REPO_FULL:                ${{ github.repository }}
       run: |
         set -euo pipefail
 
@@ -329,6 +417,18 @@ runs:
         validate_req require_issue_templates "${REQ_ISSUE_TEMPLATES}"
         validate_req require_pr_template     "${REQ_PR_TEMPLATE}"
         validate_req require_funding         "${REQ_FUNDING}"
+        validate_req require_dependabot           "${REQ_DEPENDABOT}"
+        validate_req require_codeql               "${REQ_CODEQL}"
+        validate_req require_editorconfig         "${REQ_EDITORCONFIG}"
+        validate_req require_gitattributes        "${REQ_GITATTRIBUTES}"
+        validate_req require_gitignore            "${REQ_GITIGNORE}"
+        validate_req require_markdownlint         "${REQ_MARKDOWNLINT}"
+        validate_req require_yamllint             "${REQ_YAMLLINT}"
+        validate_req require_ghas_code_scanning   "${REQ_GHAS_CODE_SCANNING}"
+        validate_req require_ghas_secret_scanning "${REQ_GHAS_SECRET_SCANNING}"
+        validate_req require_dependabot_alerts    "${REQ_DEPENDABOT_ALERTS}"
+        validate_req require_security_devops      "${REQ_SECURITY_DEVOPS}"
+        validate_req require_scorecard            "${REQ_SCORECARD}"
 
         # ----- Validate *_source inputs + helper for per-rule resolution --
         validate_source() {
@@ -789,6 +889,247 @@ runs:
         # ----- CH006: FUNDING.yml (org-aware) ------------------------------
         check_health_file CH006 "FUNDING.yml" "${REQ_FUNDING}" "funding" "$(resolve_source "${SRC_FUNDING}")" \
           ".github/FUNDING.yml" "FUNDING.yml"
+
+        # ----- DP001: Dependabot config ------------------------------------
+        # Dependabot is a per-repo config file; org-level dependabot doesn't
+        # exist (the org `.github` repo doesn't apply this one). So check
+        # local only.
+        check_local_file() {
+          # Args: rule_id, label, requirement, generate_hint, file1 [file2 ...]
+          local id="$1" label="$2" req="$3" hint="$4"; shift 4
+          if [ "${req}" = "skip" ]; then
+            record "${id}" skip "${label} check disabled via require_* input"
+            return
+          fi
+          local f
+          for f in "$@"; do
+            if [ -e "${f}" ]; then
+              record "${id}" pass "${label} present at \`${f}\`"
+              return
+            fi
+          done
+          if [ -n "${hint}" ]; then
+            record "${id}" "${req}" "${label} not found -- ${hint}"
+          else
+            record "${id}" "${req}" "${label} not found (searched: $*)"
+          fi
+        }
+
+        check_local_file DP001 "Dependabot config" "${REQ_DEPENDABOT}" \
+          "scaffold via \`marketplace-kit generate-policy dependabot\` or copy from https://github.com/blackoutsecure/bos-marketplace-kit" \
+          ".github/dependabot.yml" ".github/dependabot.yaml"
+
+        # ----- CQ001: CodeQL workflow --------------------------------------
+        # A CodeQL workflow file conventionally lives at
+        # `.github/workflows/codeql.yml` but the naming is not enforced
+        # by GitHub. We detect by content too -- any workflow file that
+        # references the codeql-action repo counts.
+        CODEQL_WF=""
+        if [ -d .github/workflows ]; then
+          while IFS= read -r f; do
+            [ -z "${f}" ] && continue
+            if grep -qE 'github/codeql-action(/init|/analyze|/upload-sarif|@)' "${f}"; then
+              CODEQL_WF="${f}"
+              break
+            fi
+          done < <(find .github/workflows -maxdepth 1 -type f \( -name '*.yml' -o -name '*.yaml' \) 2>/dev/null)
+        fi
+        if [ "${REQ_CODEQL}" = "skip" ]; then
+          record CQ001 skip "CodeQL workflow check disabled via require_codeql"
+        elif [ -n "${CODEQL_WF}" ]; then
+          record CQ001 pass "CodeQL workflow found at \`${CODEQL_WF}\`"
+        else
+          record CQ001 "${REQ_CODEQL}" "no CodeQL workflow found -- scaffold via \`marketplace-kit generate-policy codeql-workflow\` (free on public repos via GitHub Advanced Security)"
+        fi
+
+        # ----- LT001-LT005: lint config presence ---------------------------
+        check_local_file LT001 ".editorconfig" "${REQ_EDITORCONFIG}" \
+          "add an .editorconfig to standardise indentation/encoding across editors" \
+          ".editorconfig"
+        check_local_file LT002 ".gitattributes" "${REQ_GITATTRIBUTES}" \
+          "add a .gitattributes to lock line-endings + tag generated files" \
+          ".gitattributes"
+        check_local_file LT003 ".gitignore" "${REQ_GITIGNORE}" \
+          "add a .gitignore" \
+          ".gitignore"
+        check_local_file LT004 "markdownlint config" "${REQ_MARKDOWNLINT}" \
+          "scaffold via \`marketplace-kit generate-policy markdownlint\`" \
+          ".markdownlint.yaml" ".markdownlint.yml" ".markdownlint-cli2.yaml" \
+          ".markdownlint-cli2.jsonc" ".markdownlint.json"
+        check_local_file LT005 "yamllint config" "${REQ_YAMLLINT}" \
+          "scaffold via \`marketplace-kit generate-policy yamllint\`" \
+          ".yamllint.yml" ".yamllint.yaml" ".yamllint"
+
+        # ----- GH001-GH003: GitHub Advanced Security toggles ---------------
+        # The repo-settings endpoint returns `security_and_analysis.*`
+        # which is the source of truth for GHAS toggles. Requires a
+        # token. Dependabot alerts have a separate endpoint that needs
+        # admin scope; we probe it but skip cleanly on 403/404.
+        SAS_JSON=""
+        if [ -n "${GH_TOKEN}" ] && [ -n "${REPO_FULL}" ]; then
+          SAS_JSON="$(curl -sS \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${REPO_FULL}" 2>/dev/null || echo '')"
+        fi
+
+        gh_feature_status() {
+          # Args: jq-style path, e.g. .security_and_analysis.advanced_security.status
+          local path="$1"
+          [ -z "${SAS_JSON}" ] && return 1
+          printf '%s' "${SAS_JSON}" | python3 -c '
+        import json, sys, os
+        try:
+            d = json.load(sys.stdin)
+        except Exception:
+            sys.exit(1)
+        path = sys.argv[1].lstrip(".").split(".")
+        for p in path:
+            if not isinstance(d, dict): sys.exit(1)
+            d = d.get(p)
+            if d is None: sys.exit(1)
+        print(d)
+        ' "${path}"
+        }
+
+        record_gh_feature() {
+          # Args: rule_id, label, requirement, status_value (or empty)
+          local id="$1" label="$2" req="$3" status="$4"
+          if [ "${req}" = "skip" ]; then
+            record "${id}" skip "${label} check disabled via require_* input"
+            return
+          fi
+          if [ -z "${GH_TOKEN}" ]; then
+            record "${id}" skip "${label}: no github_token -- skipped (pass \`github_token\` to enable)"
+            return
+          fi
+          if [ -z "${SAS_JSON}" ]; then
+            record "${id}" "${req}" "${label}: repo settings lookup failed -- token may lack \`metadata: read\`"
+            return
+          fi
+          case "${status}" in
+            enabled)
+              record "${id}" pass "${label} enabled"
+              ;;
+            disabled|"")
+              record "${id}" "${req}" "${label} is disabled or not visible -- enable at Settings > Code security and analysis"
+              ;;
+            *)
+              record "${id}" "${req}" "${label} status=${status} (expected 'enabled')"
+              ;;
+          esac
+        }
+
+        # GH001: Code scanning (CodeQL alerts default-setup OR a workflow exists)
+        # The settings object doesn't expose a single 'code_scanning' bit;
+        # presence of the workflow (CQ001) plus successful default-setup
+        # is the signal. We approximate via the GET /repos/{}/code-scanning/default-setup endpoint.
+        if [ "${REQ_GHAS_CODE_SCANNING}" = "skip" ]; then
+          record GH001 skip "GHAS code scanning check disabled via require_ghas_code_scanning"
+        elif [ -z "${GH_TOKEN}" ]; then
+          record GH001 skip "GHAS code scanning: no github_token -- skipped"
+        else
+          cs_status="$(curl -sS -o /dev/null -w '%{http_code}' \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${REPO_FULL}/code-scanning/default-setup" 2>/dev/null || echo '000')"
+          case "${cs_status}" in
+            200)
+              cs_state="$(curl -sS \
+                -H "Authorization: Bearer ${GH_TOKEN}" \
+                -H "Accept: application/vnd.github+json" \
+                -H "X-GitHub-Api-Version: 2022-11-28" \
+                "https://api.github.com/repos/${REPO_FULL}/code-scanning/default-setup" 2>/dev/null \
+                | python3 -c 'import json,sys; print(json.load(sys.stdin).get("state",""))')"
+              if [ "${cs_state}" = "configured" ] || [ -n "${CODEQL_WF}" ]; then
+                record GH001 pass "code scanning configured (default-setup state=${cs_state:-via-workflow})"
+              else
+                record GH001 "${REQ_GHAS_CODE_SCANNING}" "code scanning not configured -- enable at Settings > Code security or add a CodeQL workflow"
+              fi
+              ;;
+            404)
+              # Default-setup unavailable AND no workflow.
+              if [ -n "${CODEQL_WF}" ]; then
+                record GH001 pass "code scanning provided by workflow \`${CODEQL_WF}\`"
+              else
+                record GH001 "${REQ_GHAS_CODE_SCANNING}" "code scanning not configured (HTTP 404 + no CodeQL workflow)"
+              fi
+              ;;
+            403)
+              record GH001 skip "GHAS code scanning: token lacks scope -- HTTP 403"
+              ;;
+            *)
+              record GH001 "${REQ_GHAS_CODE_SCANNING}" "code scanning probe returned HTTP ${cs_status}"
+              ;;
+          esac
+        fi
+
+        # GH002: Secret scanning
+        ss_status="$(gh_feature_status .security_and_analysis.secret_scanning.status || echo '')"
+        record_gh_feature GH002 "secret scanning" "${REQ_GHAS_SECRET_SCANNING}" "${ss_status}"
+
+        # GH003: Dependabot alerts
+        # The /vulnerability-alerts endpoint returns 204 if enabled,
+        # 404 if disabled. Requires Admin:read.
+        if [ "${REQ_DEPENDABOT_ALERTS}" = "skip" ]; then
+          record GH003 skip "Dependabot alerts check disabled via require_dependabot_alerts"
+        elif [ -z "${GH_TOKEN}" ]; then
+          record GH003 skip "Dependabot alerts: no github_token -- skipped"
+        else
+          va_status="$(curl -sS -o /dev/null -w '%{http_code}' \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${REPO_FULL}/vulnerability-alerts" 2>/dev/null || echo '000')"
+          case "${va_status}" in
+            204) record GH003 pass "Dependabot alerts enabled" ;;
+            404) record GH003 "${REQ_DEPENDABOT_ALERTS}" "Dependabot alerts disabled -- enable at Settings > Code security" ;;
+            403) record GH003 skip "Dependabot alerts: token lacks scope (need \`Administration: read\`)" ;;
+            *)   record GH003 "${REQ_DEPENDABOT_ALERTS}" "Dependabot alerts probe returned HTTP ${va_status}" ;;
+          esac
+        fi
+
+        # ----- MS001: Microsoft Security DevOps workflow -------------------
+        # Detect by content: any workflow referencing
+        # microsoft/security-devops-action counts.
+        MS_WF=""
+        if [ -d .github/workflows ]; then
+          while IFS= read -r f; do
+            [ -z "${f}" ] && continue
+            if grep -qE 'microsoft/security-devops-action' "${f}"; then
+              MS_WF="${f}"
+              break
+            fi
+          done < <(find .github/workflows -maxdepth 1 -type f \( -name '*.yml' -o -name '*.yaml' \) 2>/dev/null)
+        fi
+        if [ "${REQ_SECURITY_DEVOPS}" = "skip" ]; then
+          record MS001 skip "Microsoft Security DevOps workflow check disabled via require_security_devops"
+        elif [ -n "${MS_WF}" ]; then
+          record MS001 pass "Microsoft Security DevOps workflow found at \`${MS_WF}\`"
+        else
+          record MS001 "${REQ_SECURITY_DEVOPS}" "no Microsoft Security DevOps workflow found -- scaffold via \`marketplace-kit generate-policy security-devops-workflow\` (useful for repos with IaC or container images; integrates with Defender for Cloud)"
+        fi
+
+        # ----- SR001: OpenSSF Scorecard workflow ---------------------------
+        SR_WF=""
+        if [ -d .github/workflows ]; then
+          while IFS= read -r f; do
+            [ -z "${f}" ] && continue
+            if grep -qE 'ossf/scorecard-action' "${f}"; then
+              SR_WF="${f}"
+              break
+            fi
+          done < <(find .github/workflows -maxdepth 1 -type f \( -name '*.yml' -o -name '*.yaml' \) 2>/dev/null)
+        fi
+        if [ "${REQ_SCORECARD}" = "skip" ]; then
+          record SR001 skip "OpenSSF Scorecard workflow check disabled via require_scorecard"
+        elif [ -n "${SR_WF}" ]; then
+          record SR001 pass "OpenSSF Scorecard workflow found at \`${SR_WF}\`"
+        else
+          record SR001 "${REQ_SCORECARD}" "no OpenSSF Scorecard workflow found -- scaffold via \`marketplace-kit generate-policy scorecard-workflow\` (free for public repos; results at https://scorecard.dev)"
+        fi
 
         # ----- Aggregate + emit -------------------------------------------
         PASSED="$(awk -F'|' '$2=="pass"{n++} END{print n+0}' "${REPORT_FILE}")"

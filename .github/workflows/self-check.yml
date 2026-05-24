@@ -76,6 +76,26 @@ jobs:
           contributing_source:     local
           issue_templates_source:  local
           pr_template_source:      local
+          # New rule families (v0.2.0+). The kit dogfoods these too.
+          # We ship a `.github/dependabot.yml` (DP001 = fail),
+          # a CodeQL workflow on dev (CQ001 = fail), and lint configs
+          # (.editorconfig, .gitattributes, .gitignore, markdownlint,
+          # yamllint -- LT001..LT005 = fail). GHAS toggles are warn
+          # (CodeQL on public repos is free; secret scanning + Dependabot
+          # alerts default on for public repos). Microsoft Security
+          # DevOps + OpenSSF Scorecard are opt-in -- left at skip.
+          require_dependabot:           fail
+          require_codeql:               fail
+          require_editorconfig:         fail
+          require_gitattributes:        fail
+          require_gitignore:            fail
+          require_markdownlint:         fail
+          require_yamllint:             fail
+          require_ghas_code_scanning:   warn
+          require_ghas_secret_scanning: warn
+          require_dependabot_alerts:    warn
+          require_security_devops:      skip
+          require_scorecard:            skip
       - name: Show outputs
         if: always()
         env:
@@ -149,3 +169,63 @@ jobs:
           path: ${{ steps.bp.outputs.card_path }}
           if-no-files-found: error
           retention-days: 14
+
+  lint:
+    name: Lint markdown / yaml / shell / actions
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - id: lint
+        uses: ./.github/actions/lint
+        with:
+          severity: 'fail'
+          # Defaults are fine for the kit -- all four linters on.
+      - name: Show outputs
+        if: always()
+        env:
+          ISSUES_TOTAL: ${{ steps.lint.outputs.issues_total }}
+        run: |
+          set -euo pipefail
+          echo "lint issues_total=${ISSUES_TOTAL}"
+
+  branch-protection:
+    name: Verify branch protection on main
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    # `check` mode is read-only; safe on every PR. Token defaults to
+    # GITHUB_TOKEN, which has `metadata: read` and can call
+    # /branches/{branch}/protection in check mode.
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - id: bp
+        uses: ./.github/actions/branch-protection
+        with:
+          github_token: ${{ github.token }}
+          mode: 'check'
+          # Severity stays warn for the kit -- the kit currently has no
+          # protection on main; this surfaces the gap without blocking PRs.
+          severity: 'warn'
+          branch: 'main'
+          bp_require_pull_request: 'true'
+          bp_required_approvals: '1'
+          bp_no_force_push: 'true'
+          bp_no_deletion: 'true'
+      - name: Show drift summary
+        if: always()
+        env:
+          COMPLIANT: ${{ steps.bp.outputs.is_compliant }}
+          DRIFT:     ${{ steps.bp.outputs.drift_summary }}
+        run: |
+          set -euo pipefail
+          echo "compliant=${COMPLIANT}"
+          if [ -n "${DRIFT}" ]; then
+            echo "drift:"
+            printf '%s\n' "${DRIFT}"
+          fi

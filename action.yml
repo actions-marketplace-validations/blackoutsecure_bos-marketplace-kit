@@ -142,6 +142,67 @@ inputs:
     required: false
     default: 'false'
 
+  # ----- DP/CQ/LT/GH/MS/SR pass-throughs ----------------------------------
+  # New rule families added in v0.2.0+:
+  #   DP - Dependabot config presence
+  #   CQ - CodeQL workflow presence
+  #   LT - lint config files (editorconfig, gitattributes, gitignore,
+  #        markdownlint, yamllint)
+  #   GH - GitHub Advanced Security toggles (code scanning, secret
+  #        scanning, Dependabot alerts) -- requires github_token
+  #   MS - Microsoft Security DevOps workflow (opt-in, default skip)
+  #   SR - OpenSSF Scorecard workflow (opt-in, default skip)
+  # See `.github/actions/check/action.yml` for full semantics.
+
+  require_dependabot:
+    description: "DP001 severity: 'fail', 'warn', or 'skip'."
+    required: false
+    default: 'warn'
+  require_codeql:
+    description: "CQ001 severity: 'fail', 'warn', or 'skip'."
+    required: false
+    default: 'warn'
+  require_editorconfig:
+    description: "LT001 severity: 'fail', 'warn', or 'skip'."
+    required: false
+    default: 'warn'
+  require_gitattributes:
+    description: "LT002 severity: 'fail', 'warn', or 'skip'."
+    required: false
+    default: 'warn'
+  require_gitignore:
+    description: "LT003 severity: 'fail', 'warn', or 'skip'."
+    required: false
+    default: 'warn'
+  require_markdownlint:
+    description: "LT004 severity: 'fail', 'warn', or 'skip'."
+    required: false
+    default: 'skip'
+  require_yamllint:
+    description: "LT005 severity: 'fail', 'warn', or 'skip'."
+    required: false
+    default: 'skip'
+  require_ghas_code_scanning:
+    description: "GH001 severity: 'fail', 'warn', or 'skip'."
+    required: false
+    default: 'warn'
+  require_ghas_secret_scanning:
+    description: "GH002 severity: 'fail', 'warn', or 'skip'."
+    required: false
+    default: 'warn'
+  require_dependabot_alerts:
+    description: "GH003 severity: 'fail', 'warn', or 'skip'."
+    required: false
+    default: 'warn'
+  require_security_devops:
+    description: "MS001 severity: 'fail', 'warn', or 'skip'."
+    required: false
+    default: 'skip'
+  require_scorecard:
+    description: "SR001 severity: 'fail', 'warn', or 'skip'."
+    required: false
+    default: 'skip'
+
 outputs:
   passed:
     description: 'Number of checks that passed.'
@@ -185,3 +246,15 @@ runs:
         pr_template_source:      ${{ inputs.pr_template_source }}
         funding_source:          ${{ inputs.funding_source }}
         auto_generate_missing:   ${{ inputs.auto_generate_missing }}
+        require_dependabot:           ${{ inputs.require_dependabot }}
+        require_codeql:               ${{ inputs.require_codeql }}
+        require_editorconfig:         ${{ inputs.require_editorconfig }}
+        require_gitattributes:        ${{ inputs.require_gitattributes }}
+        require_gitignore:            ${{ inputs.require_gitignore }}
+        require_markdownlint:         ${{ inputs.require_markdownlint }}
+        require_yamllint:             ${{ inputs.require_yamllint }}
+        require_ghas_code_scanning:   ${{ inputs.require_ghas_code_scanning }}
+        require_ghas_secret_scanning: ${{ inputs.require_ghas_secret_scanning }}
+        require_dependabot_alerts:    ${{ inputs.require_dependabot_alerts }}
+        require_security_devops:      ${{ inputs.require_security_devops }}
+        require_scorecard:            ${{ inputs.require_scorecard }}

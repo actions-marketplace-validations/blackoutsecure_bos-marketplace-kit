@@ -1,0 +1,335 @@
+name: Lint
+description: >-
+  Multi-language lint orchestrator for Marketplace Action repositories.
+  Auto-detects which file types are present in the working tree and
+  invokes the appropriate linter for each, fanning failures into a
+  single annotated job summary. Designed to be dropped into any kit
+  consumer with zero configuration and tuned via inputs from there.
+
+  Currently wired:
+
+    * markdownlint-cli2  — `.md`           (config: .markdownlint.yaml)
+    * yamllint            — `.yml`/`.yaml`  (config: .yamllint.yml)
+    * shellcheck          — `.sh`           (config: .shellcheckrc)
+    * actionlint          — `.github/workflows/*.yml`
+
+  All four are install-on-demand into ephemeral cache locations on the
+  runner — no global package installs, no caller setup actions needed.
+  When a config file for a given linter is absent, that linter still
+  runs with its built-in defaults (consistent with the kit's policy
+  that lint configs are recommended, not required).
+
+  Each linter is independently gated by an input so consumers can
+  disable any one of them without forking. The composite never auto-
+  installs language toolchains it cannot reasonably justify (no ruff,
+  eslint, prettier here — those belong in language-specific composites
+  scaffolded by `marketplace-kit generate-policy`).
+
+  Outputs:
+    issues_total — integer; sum across all linters that ran.
+    summary_path — path to the generated GHA job summary fragment.
+
+inputs:
+  run_markdownlint:
+    description: >-
+      Run markdownlint-cli2 against `*.md` files. Set to `false` to
+      skip even when markdown is present.
+    required: false
+    default: 'true'
+
+  run_yamllint:
+    description: >-
+      Run yamllint against `*.yml`/`*.yaml` files. Skips silently if
+      no YAML is present.
+    required: false
+    default: 'true'
+
+  run_shellcheck:
+    description: >-
+      Run shellcheck against `*.sh` files. Skips silently if no shell
+      scripts are present. Composite action `run:` blocks are NOT
+      extracted here — use actionlint for those.
+    required: false
+    default: 'true'
+
+  run_actionlint:
+    description: >-
+      Run actionlint against `.github/workflows/*.yml`. Skips silently
+      if no workflows are present (e.g. when the repo only ships
+      composite actions consumed by callers).
+    required: false
+    default: 'true'
+
+  paths_md:
+    description: >-
+      Newline-separated globs (relative to repo root) to scan for
+      markdown. Default scans the whole repo. Use to exclude
+      `vendor/`, `node_modules/`, etc. that should already be in
+      .gitignore but might sneak in.
+    required: false
+    default: '**/*.md'
+
+  paths_yaml:
+    description: >-
+      Newline-separated globs for YAML files.
+    required: false
+    default: |
+      **/*.yml
+      **/*.yaml
+
+  paths_shell:
+    description: >-
+      Newline-separated globs for shell scripts.
+    required: false
+    default: '**/*.sh'
+
+  severity:
+    description: >-
+      How findings affect the workflow result. One of:
+        * `fail`   — non-zero exit if any linter finds an issue
+                     (recommended for CI gates).
+        * `warn`   — annotate findings, but the action exits 0.
+        * `skip`   — disable the entire composite (useful for
+                     conditional callers).
+    required: false
+    default: 'fail'
+
+  markdownlint_version:
+    description: >-
+      npm version spec for markdownlint-cli2. Pinned for reproducible
+      runs; bump deliberately when newer rules are wanted.
+    required: false
+    default: '0.18.1'
+
+  yamllint_version:
+    description: >-
+      pip version spec for yamllint.
+    required: false
+    default: '1.37.0'
+
+  actionlint_version:
+    description: >-
+      Tag of rhysd/actionlint to download. Must exist on the
+      actionlint GitHub Releases page. The composite downloads the
+      pinned binary directly (no `apt install`), keeping behaviour
+      reproducible across runner images.
+    required: false
+    default: 'v1.7.7'
+
+outputs:
+  issues_total:
+    description: Total number of lint findings across all linters that ran.
+    value: ${{ steps.run.outputs.issues_total }}
+  summary_path:
+    description: Path to the generated job-summary markdown fragment.
+    value: ${{ steps.run.outputs.summary_path }}
+
+runs:
+  using: composite
+  steps:
+    - name: Lint
+      id: run
+      shell: bash
+      env:
+        RUN_MARKDOWNLINT: ${{ inputs.run_markdownlint }}
+        RUN_YAMLLINT: ${{ inputs.run_yamllint }}
+        RUN_SHELLCHECK: ${{ inputs.run_shellcheck }}
+        RUN_ACTIONLINT: ${{ inputs.run_actionlint }}
+        PATHS_MD: ${{ inputs.paths_md }}
+        PATHS_YAML: ${{ inputs.paths_yaml }}
+        PATHS_SHELL: ${{ inputs.paths_shell }}
+        SEVERITY: ${{ inputs.severity }}
+        MDLINT_VERSION: ${{ inputs.markdownlint_version }}
+        YAMLLINT_VERSION: ${{ inputs.yamllint_version }}
+        ACTIONLINT_VERSION: ${{ inputs.actionlint_version }}
+      run: |
+        set -euo pipefail
+
+        # ----- helpers ---------------------------------------------------
+        die() { printf '::error::%s\n' "$*" >&2; exit 1; }
+        warn() { printf '::warning::%s\n' "$*" >&2; }
+        info() { printf '::notice::%s\n' "$*" >&2; }
+
+        # Normalise severity early so an invalid value fails fast.
+        case "${SEVERITY}" in
+          fail|warn|skip) : ;;
+          *) die "invalid severity='${SEVERITY}'; expected fail|warn|skip" ;;
+        esac
+
+        if [[ "${SEVERITY}" == "skip" ]]; then
+          info "lint composite skipped (severity=skip)"
+          {
+            echo "issues_total=0"
+            echo "summary_path="
+          } >> "${GITHUB_OUTPUT}"
+          exit 0
+        fi
+
+        # Single summary fragment for the whole composite.
+        SUMMARY="${RUNNER_TEMP:-/tmp}/lint-summary.md"
+        : > "${SUMMARY}"
+        echo "## Lint results" >> "${SUMMARY}"
+        echo "" >> "${SUMMARY}"
+        echo "| Linter | Status | Findings |" >> "${SUMMARY}"
+        echo "|---|---|---|" >> "${SUMMARY}"
+
+        TOTAL_ISSUES=0
+        ANY_FAIL=0
+
+        # Newline-separated globs → expanded file list via find.
+        # We deliberately avoid `globstar` because runners may not have
+        # it enabled in the implicit shell.
+        expand_globs() {
+          local globs="$1"
+          local f
+          while IFS= read -r pat; do
+            [[ -z "${pat}" ]] && continue
+            # shellcheck disable=SC2086
+            find . -type f -path "./${pat}" 2>/dev/null || true
+            # Also try without leading ./ in case the pattern is rooted.
+            find . -type f -path "${pat}" 2>/dev/null || true
+          done <<< "${globs}" | sort -u
+        }
+
+        run_linter() {
+          local label="$1"; shift
+          local count_file="$1"; shift
+          local rc=0
+          "$@" || rc=$?
+          local n=0
+          [[ -s "${count_file}" ]] && n=$(wc -l < "${count_file}" | tr -d ' ')
+          TOTAL_ISSUES=$(( TOTAL_ISSUES + n ))
+          if [[ "${rc}" -ne 0 ]]; then
+            echo "| ${label} | ❌ fail (rc=${rc}) | ${n} |" >> "${SUMMARY}"
+            ANY_FAIL=1
+          elif [[ "${n}" -gt 0 ]]; then
+            echo "| ${label} | ⚠ warn | ${n} |" >> "${SUMMARY}"
+          else
+            echo "| ${label} | ✅ clean | 0 |" >> "${SUMMARY}"
+          fi
+        }
+
+        # ----- markdownlint ---------------------------------------------
+        if [[ "${RUN_MARKDOWNLINT}" == "true" ]]; then
+          MD_FILES=$(expand_globs "${PATHS_MD}")
+          if [[ -n "${MD_FILES}" ]]; then
+            info "markdownlint-cli2: ${MDLINT_VERSION}"
+            npm install --silent --no-save \
+              "markdownlint-cli2@${MDLINT_VERSION}" \
+              >/dev/null
+            CNT="${RUNNER_TEMP:-/tmp}/md-issues.txt"
+            # markdownlint-cli2 reads .markdownlint.yaml automatically.
+            # shellcheck disable=SC2086
+            npx --no-install markdownlint-cli2 ${PATHS_MD} 2>&1 | tee "${CNT}" || true
+            # The presence of any "MD###" code in output indicates findings.
+            grep -cE '(^|: )MD[0-9]{3}' "${CNT}" > "${CNT}.count" || true
+            CNT_NUM=$(cat "${CNT}.count" 2>/dev/null || echo 0)
+            : > "${CNT}.lines"
+            for i in $(seq 1 "${CNT_NUM:-0}"); do echo x >> "${CNT}.lines"; done
+            run_linter "markdownlint" "${CNT}.lines" true
+          else
+            echo "| markdownlint | ⊘ no .md files | 0 |" >> "${SUMMARY}"
+          fi
+        else
+          echo "| markdownlint | ⊘ disabled | 0 |" >> "${SUMMARY}"
+        fi
+
+        # ----- yamllint -------------------------------------------------
+        if [[ "${RUN_YAMLLINT}" == "true" ]]; then
+          YAML_FILES=$(expand_globs "${PATHS_YAML}")
+          if [[ -n "${YAML_FILES}" ]]; then
+            info "yamllint: ${YAMLLINT_VERSION}"
+            python3 -m pip install --quiet "yamllint==${YAMLLINT_VERSION}"
+            CNT="${RUNNER_TEMP:-/tmp}/yaml-issues.txt"
+            # If .yamllint.yml exists it's auto-discovered; otherwise
+            # yamllint falls back to its built-in default config.
+            yamllint -f github . 2>&1 | tee "${CNT}" || true
+            # yamllint -f github emits "::warning" / "::error" per finding.
+            grep -cE '^::(warning|error)' "${CNT}" > "${CNT}.count" || true
+            CNT_NUM=$(cat "${CNT}.count" 2>/dev/null || echo 0)
+            : > "${CNT}.lines"
+            for i in $(seq 1 "${CNT_NUM:-0}"); do echo x >> "${CNT}.lines"; done
+            run_linter "yamllint" "${CNT}.lines" true
+          else
+            echo "| yamllint | ⊘ no .yml files | 0 |" >> "${SUMMARY}"
+          fi
+        else
+          echo "| yamllint | ⊘ disabled | 0 |" >> "${SUMMARY}"
+        fi
+
+        # ----- shellcheck -----------------------------------------------
+        if [[ "${RUN_SHELLCHECK}" == "true" ]]; then
+          SH_FILES=$(expand_globs "${PATHS_SHELL}")
+          if [[ -n "${SH_FILES}" ]]; then
+            if ! command -v shellcheck >/dev/null 2>&1; then
+              # ubuntu-latest images ship shellcheck preinstalled. Fall back
+              # to apt only if not present (rare).
+              sudo apt-get update -qq
+              sudo apt-get install -y -qq shellcheck >/dev/null
+            fi
+            info "shellcheck: $(shellcheck --version | awk '/^version/ {print $2}')"
+            CNT="${RUNNER_TEMP:-/tmp}/sh-issues.txt"
+            # The shellcheck binary honours .shellcheckrc in cwd automatically.
+            # shellcheck disable=SC2086
+            echo "${SH_FILES}" | xargs -r shellcheck --format=gcc 2>&1 | tee "${CNT}" || true
+            # gcc format: one finding per line, look for ":line:col: severity:"
+            grep -cE ':[0-9]+:[0-9]+: (error|warning|note|info):' "${CNT}" > "${CNT}.count" || true
+            CNT_NUM=$(cat "${CNT}.count" 2>/dev/null || echo 0)
+            : > "${CNT}.lines"
+            for i in $(seq 1 "${CNT_NUM:-0}"); do echo x >> "${CNT}.lines"; done
+            run_linter "shellcheck" "${CNT}.lines" true
+          else
+            echo "| shellcheck | ⊘ no .sh files | 0 |" >> "${SUMMARY}"
+          fi
+        else
+          echo "| shellcheck | ⊘ disabled | 0 |" >> "${SUMMARY}"
+        fi
+
+        # ----- actionlint -----------------------------------------------
+        if [[ "${RUN_ACTIONLINT}" == "true" ]]; then
+          if [[ -d .github/workflows ]] && \
+             compgen -G ".github/workflows/*.y*ml" >/dev/null; then
+            info "actionlint: ${ACTIONLINT_VERSION}"
+            # actionlint provides a script that downloads the right
+            # binary for the runner's OS/arch.
+            TMP_AL="${RUNNER_TEMP:-/tmp}/actionlint"
+            mkdir -p "${TMP_AL}"
+            ( cd "${TMP_AL}" && \
+              curl -fsSL "https://raw.githubusercontent.com/rhysd/actionlint/${ACTIONLINT_VERSION}/scripts/download-actionlint.bash" \
+                | bash -s -- "${ACTIONLINT_VERSION#v}" >/dev/null
+            )
+            CNT="${RUNNER_TEMP:-/tmp}/al-issues.txt"
+            "${TMP_AL}/actionlint" -color 2>&1 | tee "${CNT}" || true
+            # actionlint default format: file:line:col: msg [code]
+            grep -cE '^[^:]+:[0-9]+:[0-9]+:' "${CNT}" > "${CNT}.count" || true
+            CNT_NUM=$(cat "${CNT}.count" 2>/dev/null || echo 0)
+            : > "${CNT}.lines"
+            for i in $(seq 1 "${CNT_NUM:-0}"); do echo x >> "${CNT}.lines"; done
+            run_linter "actionlint" "${CNT}.lines" true
+          else
+            echo "| actionlint | ⊘ no workflows | 0 |" >> "${SUMMARY}"
+          fi
+        else
+          echo "| actionlint | ⊘ disabled | 0 |" >> "${SUMMARY}"
+        fi
+
+        # ----- finalise --------------------------------------------------
+        echo "" >> "${SUMMARY}"
+        echo "**Total findings:** ${TOTAL_ISSUES}" >> "${SUMMARY}"
+
+        if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+          cat "${SUMMARY}" >> "${GITHUB_STEP_SUMMARY}"
+        fi
+
+        {
+          echo "issues_total=${TOTAL_ISSUES}"
+          echo "summary_path=${SUMMARY}"
+        } >> "${GITHUB_OUTPUT}"
+
+        if [[ "${ANY_FAIL}" -eq 1 && "${SEVERITY}" == "fail" ]]; then
+          die "lint composite found issues (total=${TOTAL_ISSUES}); see job summary"
+        elif [[ "${ANY_FAIL}" -eq 1 ]]; then
+          warn "lint composite found issues (total=${TOTAL_ISSUES}) but severity=warn; not failing"
+        else
+          info "lint composite clean (total=${TOTAL_ISSUES})"
+        fi

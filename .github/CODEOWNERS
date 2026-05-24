@@ -1,0 +1,26 @@
+# CODEOWNERS for bos-marketplace-kit
+#
+# This file controls automatic review assignment on the public
+# Marketplace listing. Anyone listed here is auto-requested for review
+# on any PR that touches a matching path. See
+# https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+# for the full rule syntax.
+#
+# Wildcards match relative to the repo root.
+
+# Default — every PR pings the org maintainers.
+*                              @blackoutsecure/maintainers
+
+# The Marketplace surface (action.yml + composites + the shared lib)
+# is the most sensitive part of the repo; require an explicit review
+# from the maintainers group on every change.
+/action.yml                    @blackoutsecure/maintainers
+/.github/actions/              @blackoutsecure/maintainers
+/.github/workflows/            @blackoutsecure/maintainers
+
+# Python package — CLI + policy templates.
+/src/                          @blackoutsecure/maintainers
+/tests/                        @blackoutsecure/maintainers
+
+# Docs are lower-stakes; keep on default reviewer set.
+*.md                           @blackoutsecure/maintainers

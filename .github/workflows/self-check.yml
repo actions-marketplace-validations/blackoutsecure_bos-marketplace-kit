@@ -58,12 +58,15 @@ jobs:
           # We dogfood the *_source machinery here. The kit ships a
           # repo-specific `CONTRIBUTING.md` (refers to `make check`,
           # the dev->main release flow, JSON report format, etc.) so
-          # CH002 stays `local`. The rest of the community-health
-          # files (CoC, SECURITY, SUPPORT, FUNDING) live in
-          # `blackoutsecure/.github` and are intentionally absent from
-          # this repo, so we mark them `inherit`. Issue/PR templates
-          # are repo-specific (kit-shaped bug-report + PR checklist),
-          # so the source for those remains `local`.
+          # CH002 stays `local`. Everything else lives in
+          # `blackoutsecure/.github` and is intentionally absent from
+          # this repo:
+          #   - CoC, SECURITY, SUPPORT, FUNDING (community-health docs)
+          #   - issue templates + PR template (generic across the org)
+          # so we mark them all `inherit`. Removing the per-repo
+          # duplicates of issue/PR templates means contributors see the
+          # org-wide forms, which include a security-impact field and
+          # other fields the kit-specific copies lacked.
           require_security:        warn
           require_code_of_conduct: warn
           require_contributing:    warn
@@ -74,8 +77,8 @@ jobs:
           support_source:          inherit
           funding_source:          inherit
           contributing_source:     local
-          issue_templates_source:  local
-          pr_template_source:      local
+          issue_templates_source:  inherit
+          pr_template_source:      inherit
           # New rule families (v0.2.0+). The kit dogfoods these too.
           # We ship a `.github/dependabot.yml` (DP001 = fail),
           # a CodeQL workflow on dev (CQ001 = fail), and lint configs

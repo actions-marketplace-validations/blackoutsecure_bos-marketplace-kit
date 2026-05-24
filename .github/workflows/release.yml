@@ -319,14 +319,24 @@ jobs:
           # The Marketplace-facing surface on `main`. Everything else
           # (workflows, tests, scripts, src/, docs/) stays on `dev`.
           #
-          # Community-health files (CoC, SECURITY, SUPPORT, FUNDING)
-          # are intentionally NOT promoted — they're inherited from
-          # the org `.github` repo (`blackoutsecure/.github`) and the
-          # kit's own check composite is configured with
-          # `*_source: inherit` for those rules in self-check.yml.
-          # The Marketplace listing's community profile picks them up
-          # from the org default, so consumers see them as present
-          # without each repo shipping a duplicate copy.
+          # Community-health files (README, CoC, CONTRIBUTING, SECURITY,
+          # SUPPORT, FUNDING, ISSUE_TEMPLATE/, PULL_REQUEST_TEMPLATE.md)
+          # are fully inherited from the org `.github` repo
+          # (`blackoutsecure/.github`) — the kit's own check composite
+          # uses `*_source: inherit` for those rules in self-check.yml
+          # and the Marketplace listing's community profile resolves
+          # each one through the org default, so consumers see a 100%
+          # community profile without the kit shipping a duplicate copy.
+          #
+          # Per-repo (NOT inherited) — must be promoted explicitly:
+          #   * LICENSE / NOTICE      — root, attached to Marketplace listing
+          #   * .github/CODEOWNERS    — affects PR review-routing on main
+          #   * .github/dependabot.yml — Dependabot reads ONLY default branch
+          #
+          # FUNDING.yml inherits from the org `.github` repo; the
+          # `.github/FUNDING.yml` extra below is a no-op unless a
+          # per-repo override is intentionally added.
+          # See https://docs.github.com/communities/setting-up-your-project-for-healthy-contributions/creating-a-default-community-health-file
           allowlist_paths: |
             action.yml
             LICENSE
@@ -342,6 +352,7 @@ jobs:
             .github/actions/lint
             .github/actions/branch-protection
           extra_allowlist_paths: |
+            .github/CODEOWNERS
             .github/dependabot.yml
             .github/FUNDING.yml
             .editorconfig

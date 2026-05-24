@@ -1018,6 +1018,22 @@ runs:
             record "${id}" "${req}" "${label}: repo settings lookup failed -- token may lack \`metadata: read\`"
             return
           fi
+          # GitHub only returns the `security_and_analysis` object in
+          # `GET /repos/{}` responses when the caller has admin/write
+          # access to the repo. The default GITHUB_TOKEN does NOT see
+          # this field, so an absent object means "can't tell" rather
+          # than "disabled". Skip with a clear remediation hint.
+          if ! printf '%s' "${SAS_JSON}" | python3 -c '
+        import json, sys
+        try:
+            d = json.load(sys.stdin)
+        except Exception:
+            sys.exit(1)
+        sys.exit(0 if isinstance(d.get("security_and_analysis"), dict) else 1)
+        ' >/dev/null 2>&1; then
+            record "${id}" skip "${label}: \`security_and_analysis\` not visible to token -- supply a PAT/App token with admin/write to introspect (the feature itself may already be enabled)"
+            return
+          fi
           case "${status}" in
             enabled)
               record "${id}" pass "${label} enabled"

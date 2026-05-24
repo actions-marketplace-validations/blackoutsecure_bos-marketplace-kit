@@ -1042,11 +1042,19 @@ toggles are actually enabled — surfacing drift between intent ("we
 turned on secret scanning") and reality. Each requires `github_token`
 with the appropriate scope.
 
-| ID    | Setting                              | API                                                                    | Token scope             | Default |
-|-------|--------------------------------------|------------------------------------------------------------------------|-------------------------|---------|
-| GH001 | Code scanning (CodeQL default-setup OR workflow) | `GET /repos/{}/code-scanning/default-setup`                | `metadata: read`        | `warn`  |
-| GH002 | Secret scanning                      | `GET /repos/{}` → `security_and_analysis.secret_scanning.status`        | `metadata: read`        | `warn`  |
-| GH003 | Dependabot alerts                    | `GET /repos/{}/vulnerability-alerts` (204/404)                          | `Administration: read`  | `warn`  |
+| ID    | Setting                              | API                                                                    | Token scope                       | Default |
+|-------|--------------------------------------|------------------------------------------------------------------------|-----------------------------------|---------|
+| GH001 | Code scanning (CodeQL default-setup OR workflow) | `GET /repos/{}/code-scanning/default-setup`                | `metadata: read`                  | `warn`  |
+| GH002 | Secret scanning                      | `GET /repos/{}` → `security_and_analysis.secret_scanning.status`        | admin/write on repo (PAT/App)†    | `warn`  |
+| GH003 | Dependabot alerts                    | `GET /repos/{}/vulnerability-alerts` (204/404)                          | `Administration: read` (PAT/App)  | `warn`  |
+
+† **About GH002:** `security_and_analysis` is only present in
+`GET /repos/{}` responses when the caller has admin or write access
+to the repo. The default `GITHUB_TOKEN` does NOT see this field
+even though it can read the rest of the repo metadata. When the
+field is absent, GH002 emits `skip` with a remediation hint rather
+than a false-positive `disabled` -- supply a PAT or App
+installation token with admin/write to introspect.
 
 **Public repos:** all three features are free; default-on for new
 repos created after 2023 and recommended for everything else.

@@ -139,30 +139,20 @@ runs:
       run: |
         set -euo pipefail
 
-        die() { echo "::error title=Marketplace guard::$*" >&2; exit 1; }
+        export ERR_TITLE='Marketplace guard'
+        # shellcheck source=/dev/null
+        . "${GITHUB_ACTION_PATH}/../_lib/lib.sh"
 
         # ----- Validate booleans -------------------------------------------
         for var_name in CHECK_PR_DIFF CHECK_TREE_STATE REQUIRE_ACTION_YML; do
-          val="${!var_name}"
-          case "${val}" in
-            true|false) ;;
-            *) die "input ${var_name,,} must be 'true' or 'false' (got: '${val}')" ;;
-          esac
+          validate_bool "${var_name}"
         done
 
         # ----- Parse blocked paths -----------------------------------------
+        # `blocked_paths` accepts git pathspecs (may contain '*'), so
+        # use glob_ok=yes.
         BLOCKED=()
-        while IFS= read -r raw || [ -n "${raw}" ]; do
-          for token in ${raw}; do
-            [ -z "${token}" ] && continue
-            case "${token}" in
-              \#*) continue ;;
-              /*) die "blocked path must be repo-relative, got absolute: '${token}'" ;;
-              *..*) die "blocked path must not contain '..': '${token}'" ;;
-            esac
-            BLOCKED+=("${token}")
-          done
-        done <<< "${BLOCKED_PATHS}"
+        parse_pathlist BLOCKED "${BLOCKED_PATHS}" "blocked" "yes"
 
         if [ "${#BLOCKED[@]}" -eq 0 ]; then
           die "input 'blocked_paths' resolved to zero paths"
@@ -173,18 +163,7 @@ runs:
         # required-paths checks are opt-in by populating this input).
         REQUIRED=()
         if [ -n "${REQUIRED_PATHS}" ]; then
-          while IFS= read -r raw || [ -n "${raw}" ]; do
-            for token in ${raw}; do
-              [ -z "${token}" ] && continue
-              case "${token}" in
-                \#*) continue ;;
-                /*) die "required path must be repo-relative, got absolute: '${token}'" ;;
-                *..*) die "required path must not contain '..': '${token}'" ;;
-                *$'\n'*|*$'\r'*) die "required path contains newline: '${token}'" ;;
-              esac
-              REQUIRED+=("${token}")
-            done
-          done <<< "${REQUIRED_PATHS}"
+          parse_pathlist REQUIRED "${REQUIRED_PATHS}" "required"
         fi
 
         VIOLATIONS=()

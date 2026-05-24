@@ -64,7 +64,9 @@ runs:
       run: |
         set -euo pipefail
 
-        die() { echo "::error title=Marketplace branding preview::$*" >&2; exit 1; }
+        export ERR_TITLE='Marketplace branding preview'
+        # shellcheck source=/dev/null
+        . "${GITHUB_ACTION_PATH}/../_lib/lib.sh"
 
         case "${ACTION_YML_PATH}" in
           ''|/*|*..*) die "action_yml_path must be a non-empty, repo-relative path (got: '${ACTION_YML_PATH}')" ;;
@@ -78,10 +80,10 @@ runs:
         # ----- Extract branding via sibling helper script -----------------
         # Helper lives next to this action.yml; called via
         # GITHUB_ACTION_PATH so it works whether invoked locally or
-        # from a consumer's checkout.
+        # from a consumer's checkout. Values are shlex.quote'd so the
+        # eval is safe against odd YAML content.
         BRANDING_META="$(python3 "${GITHUB_ACTION_PATH}/extract_branding.py" "${ACTION_YML_PATH}")"
-        # shellcheck disable=SC1090
-        eval "$(printf '%s\n' "${BRANDING_META}" | sed -E 's/^([A-Z_]+)=(.*)$/\1=\"\2\"/')"
+        eval "${BRANDING_META}"
 
         if [ -z "${ICON:-}" ]; then
           die "no branding.icon found in ${ACTION_YML_PATH}"

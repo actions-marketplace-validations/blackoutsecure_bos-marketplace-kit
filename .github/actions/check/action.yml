@@ -189,13 +189,12 @@ runs:
       run: |
         set -euo pipefail
 
-        die() { echo "::error title=Marketplace check::$*" >&2; exit 1; }
+        export ERR_TITLE='Marketplace check'
+        # shellcheck source=/dev/null
+        . "${GITHUB_ACTION_PATH}/../_lib/lib.sh"
 
         # ----- Validate inputs ---------------------------------------------
-        case "${FAIL_ON_WARN}" in
-          true|false) ;;
-          *) die "fail_on_warning must be 'true' or 'false' (got: '${FAIL_ON_WARN}')" ;;
-        esac
+        validate_bool FAIL_ON_WARN
 
         case "${ACTION_YML_PATH}" in
           ''|/*|*..*) die "action_yml_path must be a non-empty, repo-relative path (got: '${ACTION_YML_PATH}')" ;;
@@ -360,12 +359,11 @@ runs:
         # ----- MP002-005: action.yml shape ---------------------------------
         # Delegate parsing to a sibling helper script so the YAML stays
         # clean (heredocs inside `run: |` are an indentation foot-gun).
-        # The helper emits KEY=VALUE on stdout; we shell-eval it.
+        # The helper emits `KEY='value'` with values shell-quoted via
+        # shlex.quote, so the eval is safe against quotes/whitespace.
         if "${HAS_YML}"; then
           ACTION_META="$(python3 "${GITHUB_ACTION_PATH}/extract_meta.py" "${ACTION_YML_PATH}")"
-
-          # shellcheck disable=SC1090
-          eval "$(printf '%s\n' "${ACTION_META}" | sed -E 's/^([A-Z_]+)=(.*)$/\1=\"\2\"/')"
+          eval "${ACTION_META}"
 
           # ----- MP002: name non-empty + not org/user-shaped ----------------
           if [ -z "${NAME:-}" ]; then
@@ -512,8 +510,47 @@ runs:
           else
             record OP004 warn "${README_FILE} has no detectable Usage / Quickstart / Example heading — Marketplace consumers expect one"
           fi
+
+          # ----- OP005: README size sanity ---------------------------------
+          # Marketplace renders the README on the listing page. Tiny
+          # READMEs read as low-effort; huge ones (>128 KB) hit the
+          # GitHub-side render limit and may truncate.
+          README_BYTES="$(wc -c < "${README_FILE}" | tr -d '[:space:]')"
+          if [ "${README_BYTES}" -lt 512 ]; then
+            record OP005 warn "${README_FILE} is only ${README_BYTES} bytes — Marketplace consumers expect more"
+          elif [ "${README_BYTES}" -gt 131072 ]; then
+            record OP005 warn "${README_FILE} is ${README_BYTES} bytes (>128KB) — GitHub may truncate the rendered view"
+          else
+            record OP005 pass "${README_FILE} is ${README_BYTES} bytes (within sane range)"
+          fi
+
+          # ----- OP006: README has at least one image/badge ----------------
+          # A Marketplace listing without any visual element looks
+          # noticeably less polished. Any markdown image syntax
+          # `![alt](url)` counts.
+          if grep -qE '!\[[^]]*\]\([^)]+\)' "${README_FILE}"; then
+            record OP006 pass "${README_FILE} contains at least one image/badge"
+          else
+            record OP006 warn "${README_FILE} has no images or badges — add a status badge or screenshot"
+          fi
+
+          # ----- OP007: README has at least 3 fenced code blocks -----------
+          # Marketplace consumers scan READMEs for copy-pasteable
+          # snippets. We look for triple-backtick OPEN fences (lines
+          # starting with ``` followed by an optional language tag).
+          FENCE_COUNT="$(grep -cE '^```[A-Za-z0-9_+-]*[[:space:]]*$' "${README_FILE}" || true)"
+          # Each block has an open + close fence, so divide by 2.
+          BLOCK_COUNT=$(( FENCE_COUNT / 2 ))
+          if [ "${BLOCK_COUNT}" -ge 3 ]; then
+            record OP007 pass "${README_FILE} contains ${BLOCK_COUNT} fenced code blocks"
+          else
+            record OP007 warn "${README_FILE} contains ${BLOCK_COUNT} fenced code blocks — Marketplace consumers expect at least 3 copy-pasteable examples"
+          fi
         else
           record OP004 skip "no README"
+          record OP005 skip "no README"
+          record OP006 skip "no README"
+          record OP007 skip "no README"
         fi
 
         # ----- SC001: composites don't interpolate inputs into run: --------

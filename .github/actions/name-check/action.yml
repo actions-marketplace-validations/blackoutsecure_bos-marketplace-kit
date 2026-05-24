@@ -59,15 +59,12 @@ runs:
       run: |
         set -euo pipefail
 
-        die() { echo "::error title=Marketplace name check::$*" >&2; exit 1; }
+        export ERR_TITLE='Marketplace name check'
+        # shellcheck source=/dev/null
+        . "${GITHUB_ACTION_PATH}/../_lib/lib.sh"
 
-        case "${FAIL_ON_COLLISION}" in
-          true|false) ;;
-          *) die "fail_on_collision must be 'true' or 'false' (got: '${FAIL_ON_COLLISION}')" ;;
-        esac
-        if [ -z "${PROPOSED_NAME}" ]; then
-          die "proposed_name must be non-empty"
-        fi
+        validate_bool FAIL_ON_COLLISION
+        require_var PROPOSED_NAME
 
         # ----- Normalize to a Marketplace-style slug -----------------------
         # Lowercase, replace whitespace + non-alnum with hyphens, squeeze

@@ -126,6 +126,15 @@ inputs:
       commit, tag, or push. Useful for canary callers.
     required: false
     default: 'false'
+  update_major_tag:
+    description: >-
+      When `true`, force-pushes a floating `vX` tag (major version)
+      pointing at the new release. Marketplace convention; lets
+      consumers pin `uses: owner/repo@v1` and receive non-breaking
+      updates. This is intentionally destructive — the major tag is
+      always rewritten when this is `true`. Set `false` to opt out.
+    required: false
+    default: 'false'
 
 outputs:
   target_sha:
@@ -177,10 +186,13 @@ runs:
         GIT_USER_EMAIL:  ${{ inputs.git_user_email }}
         PUSH_RETRIES:    ${{ inputs.push_retries }}
         DRY_RUN:         ${{ inputs.dry_run }}
+        UPDATE_MAJOR_TAG: ${{ inputs.update_major_tag }}
       run: |
         set -euo pipefail
 
-        die() { echo "::error title=Marketplace promote::$*" >&2; exit 1; }
+        export ERR_TITLE='Marketplace promote'
+        # shellcheck source=/dev/null
+        . "${GITHUB_ACTION_PATH}/../_lib/lib.sh"
 
         # ----- Validate scalar inputs ---------------------------------------
         case "${SOURCE_BRANCH}" in
@@ -219,6 +231,7 @@ runs:
           true|false) ;;
           *) die "input 'dry_run' must be 'true' or 'false' (got: '${DRY_RUN}')" ;;
         esac
+        validate_bool UPDATE_MAJOR_TAG
 
         COMMIT_MSG="${COMMIT_MESSAGE:-release: ${TAG_NAME_INPUT}}"
         case "${COMMIT_MSG}" in
@@ -227,21 +240,7 @@ runs:
 
         # ----- Parse + validate REQUIRED allowlist --------------------------
         ALLOW_LIST=()
-        while IFS= read -r raw || [ -n "${raw}" ]; do
-          for token in ${raw}; do
-            [ -z "${token}" ] && continue
-            case "${token}" in
-              \#*) continue ;;
-              /*) die "allowlist path must be repo-relative, got absolute: '${token}'" ;;
-              *..*) die "allowlist path must not contain '..': '${token}'" ;;
-              *$'\n'*|*$'\r'*) die "allowlist path contains newline: '${token}'" ;;
-              *'*'*|*'?'*|*'['*) die "allowlist path must not contain glob characters (\\*, ?, [): '${token}'" ;;
-            esac
-            # Strip any trailing slash for normalization.
-            token="${token%/}"
-            ALLOW_LIST+=("${token}")
-          done
-        done <<< "${ALLOWLIST_PATHS}"
+        parse_pathlist ALLOW_LIST "${ALLOWLIST_PATHS}" "allowlist"
 
         if [ "${#ALLOW_LIST[@]}" -eq 0 ]; then
           die "input 'allowlist_paths' resolved to zero paths"
@@ -250,20 +249,7 @@ runs:
         # ----- Parse + validate OPTIONAL extra allowlist --------------------
         EXTRA_LIST=()
         if [ -n "${EXTRA_ALLOWLIST_PATHS}" ]; then
-          while IFS= read -r raw || [ -n "${raw}" ]; do
-            for token in ${raw}; do
-              [ -z "${token}" ] && continue
-              case "${token}" in
-                \#*) continue ;;
-                /*) die "extra_allowlist path must be repo-relative, got absolute: '${token}'" ;;
-                *..*) die "extra_allowlist path must not contain '..': '${token}'" ;;
-                *$'\n'*|*$'\r'*) die "extra_allowlist path contains newline: '${token}'" ;;
-                *'*'*|*'?'*|*'['*) die "extra_allowlist path must not contain glob characters (\\*, ?, [): '${token}'" ;;
-              esac
-              token="${token%/}"
-              EXTRA_LIST+=("${token}")
-            done
-          done <<< "${EXTRA_ALLOWLIST_PATHS}"
+          parse_pathlist EXTRA_LIST "${EXTRA_ALLOWLIST_PATHS}" "extra_allowlist"
         fi
 
         # ----- Hard block: explicit `.github/workflows*` entries ------------
@@ -344,7 +330,11 @@ runs:
 
         # ----- Promote: build the target tree from the allowlist ------------
         WORKTREE_DIR="$(mktemp -d -t promote-XXXXXXXX)"
-        trap 'git worktree remove --force "${WORKTREE_DIR}" 2>/dev/null || true; rm -rf "${WORKTREE_DIR}"' EXIT
+        OLD_TREE_LIST="$(mktemp -t old-tree-XXXXXX.txt)"
+        NEW_TREE_LIST="$(mktemp -t new-tree-XXXXXX.txt)"
+        REMOVED_LIST="$(mktemp -t removed-XXXXXX.txt)"
+        # shellcheck disable=SC2064
+        trap "git worktree remove --force '${WORKTREE_DIR}' 2>/dev/null || true; rm -rf '${WORKTREE_DIR}' '${OLD_TREE_LIST}' '${NEW_TREE_LIST}' '${REMOVED_LIST}'" EXIT
 
         if [ "${TARGET_EXISTS}" = "true" ]; then
           git worktree add --force -B "${TARGET_BRANCH}" \
@@ -353,12 +343,6 @@ runs:
           git worktree add --force -B "${TARGET_BRANCH}" \
             "${WORKTREE_DIR}" "${SOURCE_SHA}"
         fi
-
-        OLD_TREE_LIST="$(mktemp -t old-tree-XXXXXX.txt)"
-        NEW_TREE_LIST="$(mktemp -t new-tree-XXXXXX.txt)"
-        REMOVED_LIST="$(mktemp -t removed-XXXXXX.txt)"
-        # shellcheck disable=SC2064
-        trap "git worktree remove --force '${WORKTREE_DIR}' 2>/dev/null || true; rm -rf '${WORKTREE_DIR}' '${OLD_TREE_LIST}' '${NEW_TREE_LIST}' '${REMOVED_LIST}'" EXIT
 
         promote_into_worktree() {
           local sha="$1"
@@ -490,6 +474,36 @@ runs:
               echo "tag_name=${TAG_NAME_INPUT}"
             } >> "${GITHUB_OUTPUT}"
             emit_removal_outputs
+
+            # ----- Floating major tag (e.g. v1) ---------------------------
+            # Marketplace convention: consumers can pin `@v1` and pick
+            # up non-breaking releases. We force-push the major tag so
+            # it always points at the latest release within that major.
+            # This is intentionally destructive — opt out via the
+            # `update_major_tag: false` input.
+            if [ "${UPDATE_MAJOR_TAG}" = 'true' ]; then
+              major_num="${TAG_NAME_INPUT#v}"
+              major_num="${major_num%%.*}"
+              case "${major_num}" in
+                ''|*[!0-9]*)
+                  echo "::warning::could not derive major from '${TAG_NAME_INPUT}'; skipping major-tag update"
+                  ;;
+                *)
+                  major_tag="v${major_num}"
+                  if [ "${major_tag}" = "${TAG_NAME_INPUT}" ]; then
+                    echo "Major tag '${major_tag}' equals the release tag; skipping rewrite."
+                  else
+                    (
+                      cd "${WORKTREE_DIR}"
+                      git tag -f "${major_tag}" "${TARGET_SHA}"
+                      git push --force origin "refs/tags/${major_tag}"
+                    )
+                    echo "Major tag '${major_tag}' moved to ${TARGET_SHA:0:12}."
+                  fi
+                  ;;
+              esac
+            fi
+
             exit 0
           fi
 

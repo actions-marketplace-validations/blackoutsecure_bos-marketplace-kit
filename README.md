@@ -115,11 +115,11 @@ bos-marketplace-kit/
 │   ├── lint/                            # markdown/yaml/shell/actions linter
 │   └── branch-protection/               # branch-protection compliance (check + enforce)
 ├── .github/workflows/                  # dev-only CI; NEVER promoted to main
-│   ├── ci.yml                          # actionlint + shellcheck
+│   ├── tests.yml                       # Python CLI smoke + pytest
 │   ├── codeql.yml                      # CodeQL static analysis
 │   ├── release.yml                     # dev → main promote + tag + release
-│   ├── self-check.yml                  # dogfood: check own action.yml
-│   └── self-guard.yml                  # dogfood: guard own PRs
+│   ├── self-check.yml                  # dogfood: check + name + branding + lint + protection
+│   └── self-guard.yml                  # dogfood: guard own PRs (publish-surface gate)
 ├── scripts/
 │   ├── bootstrap-ruleset.sh            # one-shot main-branch protection
 │   └── bootstrap-branch-protection.sh  # legacy fallback

@@ -17,7 +17,7 @@
 #
 # Marketplace listing: once main has `action.yml` + branding + tag,
 # https://github.com/marketplace/actions/<slug> goes live.
-name: release
+name: Release · promote dev → main + tag + publish
 
 "on":
   workflow_dispatch:

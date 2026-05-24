@@ -16,7 +16,7 @@
 #
 # `schedule:` is intentionally absent (workflows aren't on `main`,
 # which is where GitHub looks for scheduled triggers).
-name: self-guard
+name: Self-guard · dogfood guard on PRs to main
 
 "on":
   pull_request_target:

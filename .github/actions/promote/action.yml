@@ -56,7 +56,7 @@ inputs:
       Marketplace policy on workflow files is enforced as follows:
 
         * Direct listing of `.github/workflows` or any path under it
-          (e.g. `.github/workflows/ci.yml`) is HARD-BLOCKED — the
+          (e.g. `.github/workflows/tests.yml`) is HARD-BLOCKED — the
           operator's intent is rejected with a fatal error.
         * Indirect inclusion via a parent directory (e.g. listing
           bare `.github` to bring across dependabot.yml, CODEOWNERS,

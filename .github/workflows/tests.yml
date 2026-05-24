@@ -1,0 +1,78 @@
+# Python CLI tests for bos-marketplace-kit itself.
+#
+# Runs on every PR against `dev` and every push to `dev`, and on
+# manual `workflow_dispatch` from the Actions tab. Validates:
+#   * `marketplace_kit` imports cleanly and the `marketplace-kit`
+#     console-script entrypoint resolves.
+#   * The full pytest suite passes (composite + script smoke tests
+#     transitively cover bash -n / shellcheck on every shipped
+#     composite + operator script; see tests/test_composite_actions.py
+#     and tests/test_scripts.py).
+#
+# Raw `actionlint` + raw `shellcheck` jobs USED to live here. They
+# were removed because `self-check.yml` runs the kit's own `lint`
+# composite, which is a strict superset: it invokes actionlint (with
+# its built-in shellcheck integration on every `run:` body) AND raw
+# shellcheck on `*.sh`. Keeping both was duplicate CI time.
+#
+# This workflow lives on `dev` only. It is NEVER promoted to `main`
+# (Marketplace publishing prohibits workflows on the default branch).
+#
+# `schedule:` is intentionally absent. GitHub fires scheduled
+# workflows only from files present on the default branch, and the
+# Marketplace publishing rule keeps `.github/workflows/**` off `main`.
+# Use Dependabot (already configured weekly) to catch action-version
+# drift and `workflow_dispatch` for manual sanity runs.
+name: Test · Python CLI
+
+"on":
+  push:
+    branches: [dev]
+  pull_request:
+    branches: [dev]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python-cli:
+    name: Python CLI (smoke + pytest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.11'
+      - name: Install
+        run: |
+          set -euo pipefail
+          if [ -f pyproject.toml ]; then
+            python -m pip install --upgrade pip
+            python -m pip install -e ".[dev]"
+          else
+            echo "No pyproject.toml — skipping CLI smoke."
+            exit 0
+          fi
+      - name: Import + CLI smoke
+        run: |
+          set -euo pipefail
+          if [ -f pyproject.toml ]; then
+            python -c "import marketplace_kit; print(marketplace_kit.__version__)"
+            marketplace-kit --help
+          fi
+      - name: pytest
+        run: |
+          set -euo pipefail
+          if [ -d tests ] && [ -f pyproject.toml ]; then
+            python -m pytest -q
+          else
+            echo "No tests yet — skipping."
+          fi

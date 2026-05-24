@@ -9,7 +9,7 @@
 # tuning rule severities). `schedule:` is intentionally absent —
 # GitHub only fires scheduled workflows from the default branch, and
 # Marketplace publishing keeps `.github/workflows/**` off `main`.
-name: self-check
+name: Self-check · dogfood check + name-check + branding + lint + branch-protection
 
 "on":
   push:

@@ -263,15 +263,20 @@ runs:
         fi
 
         # Normalise status-check list (CSV or newline) → JSON array.
-        # Empty input becomes [].
-        STATUS_CHECKS_JSON=$(
-          printf '%s\n' "${BP_STATUS_CHECKS}" \
-            | tr ',' '\n' \
-            | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' \
-            | grep -v '^$' \
-            | jq -R -s -c 'split("\n") | map(select(length>0)) | map({context: ., app_id: null})'
-        )
-        STATUS_CHECKS_JSON="${STATUS_CHECKS_JSON:-[]}"
+        # Empty input becomes []. Short-circuit on empty so `grep -v`'s
+        # "no matches" exit code (1) doesn't trip `set -e -o pipefail`.
+        if [[ -z "${BP_STATUS_CHECKS//[[:space:]]/}" ]]; then
+          STATUS_CHECKS_JSON='[]'
+        else
+          STATUS_CHECKS_JSON=$(
+            printf '%s\n' "${BP_STATUS_CHECKS}" \
+              | tr ',' '\n' \
+              | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' \
+              | grep -v '^$' \
+              | jq -R -s -c 'split("\n") | map(select(length>0)) | map({context: ., app_id: null})'
+          )
+          STATUS_CHECKS_JSON="${STATUS_CHECKS_JSON:-[]}"
+        fi
 
         # Restrict-pushes parsing is delegated to the testable Python
         # helper module so the kit's bash and the bootstrap script can

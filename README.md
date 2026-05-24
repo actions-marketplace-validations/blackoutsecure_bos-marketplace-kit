@@ -642,13 +642,62 @@ for elaboration.
 Optional but strongly recommended. Marketplace shows the author on
 the listing card. Add `author: Your Org Name`.
 
-### OP004 — Composite actions declare a `shell:` on each `run:` step
+### OP004 — README has a Usage / Quickstart / Example section
 
-GitHub does NOT default the shell for composite-action run steps —
-omitting `shell:` is an error at runtime. Add `shell: bash` (or
-another supported shell) to every `run:` step in a composite manifest.
+Marketplace consumers scan READMEs looking for a copy-pasteable
+snippet. The check looks for a heading matching
+`Usage`, `Quickstart`, `Getting Started`, or `Example` (any depth).
+Add one to your `README.md`:
 
-### SC001 — Third-party actions are pinned by SHA
+```markdown
+## Usage
+
+```yaml
+- uses: your-org/your-action@v1
+  with:
+    foo: bar
+```
+```
+
+### OP005 — README is a reasonable size
+
+A README under 512 bytes reads as low-effort to Marketplace
+consumers; one above 128 KB hits the GitHub-side render limit. The
+check passes when `README.md` is between 512 B and 128 KB.
+
+### OP006 — README contains at least one image or badge
+
+Listings without any visual element look notably less polished. A
+status badge (e.g. CI passing, version) or a single screenshot is
+enough. Any markdown image syntax `![alt](url)` satisfies the rule.
+
+### OP007 — README contains at least 3 fenced code blocks
+
+Marketplace consumers expect copy-pasteable snippets. The check
+counts triple-backtick fenced blocks (`` ``` ``) and warns if fewer
+than 3 are present.
+
+### SC001 — Composite actions don't interpolate user input into `run:`
+
+When a composite action interpolates `${{ inputs.* }}` or
+`${{ github.event.* }}` directly inside a `run:` block, an attacker
+who controls the input value (e.g. via a PR title) can break out of
+the shell context and execute arbitrary code on the runner. Plumb
+untrusted values via the step's `env:` block instead, then reference
+the shell variable inside the script:
+
+```yaml
+- shell: bash
+  env:
+    TITLE: ${{ github.event.pull_request.title }}
+  run: echo "$TITLE"
+```
+
+This rule is enforced by the bundled `check` composite action (which
+scans every `run:` block under `.github/actions/**`). The CLI's
+equivalent SHA-pinning rule is `SC002`.
+
+### SC002 — Third-party actions are pinned by SHA
 
 Tag/branch refs (`@v4`, `@main`) are mutable. A compromised tag move
 can inject arbitrary code into your runner. SHA pins (`@<40-hex>`)

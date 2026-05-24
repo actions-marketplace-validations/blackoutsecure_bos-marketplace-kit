@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import re
 import sys
+import urllib.error
 import urllib.request
 from importlib import resources
 from pathlib import Path
@@ -160,9 +161,12 @@ def _run_checks(manifest: dict) -> list[CheckResult]:
     else:
         results.append(CheckResult("OP003", "warn", "`author` not set — recommended for Marketplace listings"))
 
-    # SC001 — composite actions should pin third-party uses by SHA.
+    # SC002 — composite actions should pin third-party uses by SHA.
     # (Heuristic: flag any `uses: <owner>/<repo>@<non-sha-ref>` where
     # the ref is not 40 hex chars and not `./` local.)
+    # Note: ID `SC001` is reserved for the composite's shell-injection
+    # check (in `.github/actions/check/action.yml`); keep this CLI
+    # rule under a distinct ID so consumers can target either.
     if isinstance(runs, dict) and runs.get("using") == "composite":
         steps = runs.get("steps") or []
         unpinned: list[str] = []
@@ -180,12 +184,12 @@ def _run_checks(manifest: dict) -> list[CheckResult]:
                 unpinned.append(uses)
         if unpinned:
             results.append(CheckResult(
-                "SC001",
+                "SC002",
                 "warn",
                 f"third-party `uses` not SHA-pinned: {', '.join(unpinned)}",
             ))
         else:
-            results.append(CheckResult("SC001", "pass", "all third-party `uses` are SHA-pinned"))
+            results.append(CheckResult("SC002", "pass", "all third-party `uses` are SHA-pinned"))
 
     return results
 
@@ -297,6 +301,153 @@ def cmd_name_check(args: argparse.Namespace) -> int:
 
 def cmd_version(_args: argparse.Namespace) -> int:
     print(f"bos-marketplace-kit {__version__}")
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Subcommand: doctor
+# ---------------------------------------------------------------------------
+
+# Files that should be present at the root of a Marketplace-publishable repo.
+# Format: (path, severity) where severity is "fail" or "warn".
+_DOCTOR_FILES: tuple[tuple[str, str], ...] = (
+    ("action.yml",         "fail"),
+    ("README.md",          "fail"),
+    ("LICENSE",            "fail"),
+    ("SECURITY.md",        "warn"),
+    ("CODE_OF_CONDUCT.md", "warn"),
+)
+
+
+def cmd_doctor(args: argparse.Namespace) -> int:
+    """End-to-end repo readiness summary.
+
+    Runs all of:
+      * the manifest check (`cmd_check` equivalents),
+      * a presence check for community-health files,
+      * a presence check for the `dev` and `main` branches.
+
+    Exits non-zero if any FAIL is recorded, regardless of warnings.
+    """
+    import subprocess
+
+    manifest_path = Path(args.action_yml)
+    fails = 0
+    warns = 0
+
+    print(f"# marketplace-kit doctor (manifest: {manifest_path})")
+    print()
+
+    # ----- 1. Run the static rules ----------------------------------------
+    print("## Manifest checks")
+    if not manifest_path.is_file():
+        print(f"FAIL  manifest-present  {manifest_path} not found")
+        fails += 1
+    else:
+        manifest = _load_manifest(manifest_path)
+        for r in _run_checks(manifest):
+            line = f"{_emoji(r.status):<5} {r.rule_id:<6} {r.message}"
+            print(line)
+            if r.status == "fail":
+                fails += 1
+            elif r.status == "warn":
+                warns += 1
+    print()
+
+    # ----- 2. Community-health files --------------------------------------
+    print("## Community-health files")
+    for relpath, severity in _DOCTOR_FILES:
+        present = Path(relpath).is_file()
+        if present:
+            print(f"PASS  doctor  {relpath} present")
+        elif severity == "fail":
+            print(f"FAIL  doctor  {relpath} missing (required)")
+            fails += 1
+        else:
+            print(f"WARN  doctor  {relpath} missing — generate with `marketplace-kit generate-policy`")
+            warns += 1
+    print()
+
+    # ----- 3. Branch presence ---------------------------------------------
+    print("## Branches")
+    for branch in ("dev", "main"):
+        try:
+            subprocess.run(
+                ["git", "rev-parse", "--verify", f"refs/heads/{branch}"],
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            print(f"PASS  branch  local `{branch}` exists")
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            try:
+                subprocess.run(
+                    ["git", "ls-remote", "--exit-code", "origin", f"refs/heads/{branch}"],
+                    check=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                print(f"PASS  branch  remote `origin/{branch}` exists (no local checkout)")
+            except (subprocess.CalledProcessError, FileNotFoundError):
+                print(f"WARN  branch  `{branch}` not found locally or on origin")
+                warns += 1
+    print()
+
+    print(f"Summary: {fails} fail / {warns} warn")
+    if fails:
+        return 1
+    if warns and getattr(args, "fail_on_warning", False):
+        return 1
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Subcommand: doc-inputs
+# ---------------------------------------------------------------------------
+
+def cmd_doc_inputs(args: argparse.Namespace) -> int:
+    """Emit a markdown table of `inputs:` and `outputs:` from an action.yml.
+
+    Handy for keeping README synced with the manifest. Output goes to
+    stdout — pipe into your README between markers.
+    """
+    manifest = _load_manifest(Path(args.action_yml))
+    inputs = manifest.get("inputs") or {}
+    outputs = manifest.get("outputs") or {}
+
+    def _row(name: str, body: dict) -> str:
+        if not isinstance(body, dict):
+            return f"| `{name}` | | | |"
+        desc = (body.get("description") or "").strip().replace("\n", " ").replace("|", "\\|")
+        required = "yes" if body.get("required") else "no"
+        default = body.get("default")
+        if default is None or default == "":
+            default_md = ""
+        else:
+            default_md = f"`{default}`".replace("|", "\\|")
+        return f"| `{name}` | {required} | {default_md} | {desc} |"
+
+    print(f"<!-- generated by `marketplace-kit doc-inputs {args.action_yml}` -->")
+    print()
+    if inputs:
+        print("### Inputs")
+        print()
+        print("| Name | Required | Default | Description |")
+        print("|------|----------|---------|-------------|")
+        for name, body in inputs.items():
+            print(_row(str(name), body if isinstance(body, dict) else {}))
+        print()
+    if outputs:
+        print("### Outputs")
+        print()
+        print("| Name | Description |")
+        print("|------|-------------|")
+        for name, body in outputs.items():
+            desc = ""
+            if isinstance(body, dict):
+                desc = (body.get("description") or "").strip().replace("\n", " ").replace("|", "\\|")
+            print(f"| `{name}` | {desc} |")
+        print()
     return 0
 
 
@@ -441,6 +592,25 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_v = sub.add_parser("version", help="Print version and exit.")
     p_v.set_defaults(func=cmd_version)
+
+    p_doc = sub.add_parser(
+        "doctor",
+        help="End-to-end repo readiness summary (manifest + community-health + branches).",
+    )
+    p_doc.add_argument("--action-yml", default="action.yml", help="Path to manifest. Default `action.yml`.")
+    p_doc.add_argument(
+        "--fail-on-warning",
+        action="store_true",
+        help="Exit non-zero if any rule warns (default: only fail on FAIL).",
+    )
+    p_doc.set_defaults(func=cmd_doctor)
+
+    p_di = sub.add_parser(
+        "doc-inputs",
+        help="Emit a markdown table of inputs/outputs from an action.yml (stdout).",
+    )
+    p_di.add_argument("--action-yml", default="action.yml", help="Path to manifest. Default `action.yml`.")
+    p_di.set_defaults(func=cmd_doc_inputs)
 
     return parser
 

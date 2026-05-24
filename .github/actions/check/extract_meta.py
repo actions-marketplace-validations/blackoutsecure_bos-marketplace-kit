@@ -1,12 +1,14 @@
 """Extract Marketplace-relevant metadata from an action.yml.
 
-Called by the `check` composite. Emits a series of KEY=VALUE lines on
-stdout that the calling shell `eval`s.
+Called by the `check` composite. Emits a series of shell-safe
+`KEY=value` lines on stdout (values quoted via shlex.quote) that the
+calling shell `eval`s.
 """
 
 from __future__ import annotations
 
 import re
+import shlex
 import sys
 
 
@@ -69,13 +71,21 @@ def main() -> int:
     icon = _scalar(branding.get("icon")) if isinstance(branding, dict) else ""
     color = _scalar(branding.get("color")) if isinstance(branding, dict) else ""
 
-    print(f"NAME={name}")
-    print(f"DESC_LEN={len(desc)}")
-    print(f"RUNS_USING={runs_using}")
-    print(f"BRANDING_ICON={icon}")
-    print(f"BRANDING_COLOR={color}")
+    # Emit shell-safe assignments. `shlex.quote` wraps values in
+    # single quotes and escapes any internal single quotes, so the
+    # caller's `eval` is safe against odd YAML content.
+    out = [
+        ("NAME", name),
+        ("DESC_LEN", str(len(desc))),
+        ("RUNS_USING", runs_using),
+        ("BRANDING_ICON", icon),
+        ("BRANDING_COLOR", color),
+    ]
+    for key, val in out:
+        print(f"{key}={shlex.quote(val)}")
     return 0
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

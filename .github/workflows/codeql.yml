@@ -1,12 +1,23 @@
 # CodeQL analysis for bos-marketplace-kit.
 #
-# Scans the Python CLI and shipped JavaScript-free composite actions
-# for vulnerability patterns. CodeQL is free for public repositories
-# under GitHub Advanced Security; findings appear in the Security tab.
+# Scans the Python CLI and shipped composite actions for vulnerability
+# patterns. CodeQL is free for public repositories under GitHub
+# Advanced Security; findings appear in the Security tab.
 #
 # This workflow lives on `dev` only — Marketplace publishing rules
 # prohibit workflows on `main`. CodeQL still gets a complete view of
 # the source because it runs on every PR + every push to `dev`.
+#
+# `schedule:` is intentionally absent. GitHub fires scheduled
+# workflows only from files present on the default branch, and the
+# Marketplace publishing rule keeps `.github/workflows/**` off `main`.
+# Weekly drift coverage comes from Dependabot (which runs Monday
+# 06:00 UTC and bumps action SHAs that re-trigger this workflow on
+# the resulting PRs).
+#
+# `name: CodeQL` is intentionally conventional (not the `Word · …`
+# pattern used elsewhere): GitHub's Security tab surfaces this value
+# as the SARIF tool name, and external dashboards key off it.
 
 name: CodeQL
 
@@ -15,14 +26,17 @@ on:
     branches: [dev]
   pull_request:
     branches: [dev]
-  schedule:
-    # Weekly drift catch. Monday 07:00 UTC — staggered after dependabot
-    # (which runs Monday 06:00 UTC) so any new advisories are exercised
-    # against the post-dependabot tree.
-    - cron: '0 7 * * 1'
+  workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  # Use github.workflow so concurrent matrix jobs within one run don't
+  # cancel each other; only NEW runs against the same ref cancel
+  # in-flight ones.
+  group: codeql-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   analyze:
@@ -31,20 +45,24 @@ jobs:
     timeout-minutes: 30
 
     permissions:
-      # Required by github/codeql-action to upload SARIF.
+      # Required by github/codeql-action to upload SARIF to the
+      # Security tab.
       security-events: write
-      # Required to fetch the repo with full history for query analysis.
+      # Required by actions/checkout.
       contents: read
-      # Required for the action to read the action.yml metadata when
-      # autobuild scans composites.
+      # Documented "starter" permission in GitHub's CodeQL template.
+      # Not strictly required for public repos, but included for
+      # parity with the kit's `generate-policy codeql-workflow`
+      # template that consumers receive.
       actions: read
 
     strategy:
       fail-fast: false
       matrix:
-        # Only languages with source in this repo are listed. JavaScript
-        # is intentionally excluded — composite actions here have no JS
-        # entrypoint.
+        # Only languages with source in this repo are listed.
+        # JavaScript is intentionally excluded — composite actions
+        # here have no JS entrypoint. `actions` scans the workflow
+        # YAML files themselves for misuse patterns.
         language: [python, actions]
 
     steps:
@@ -61,6 +79,10 @@ jobs:
           # patterns. Use 'security-extended' for higher recall if noise
           # becomes acceptable.
           queries: security-and-quality
+
+      # No `Autobuild` step: `python` is interpreted (CodeQL needs no
+      # build) and `actions` is YAML (there is no build step). Adding
+      # Autobuild here would be a no-op at best and an error at worst.
 
       - name: Perform CodeQL analysis
         uses: github/codeql-action/analyze@03e4368ac7daa2bd82b3e85262f3bf87ee112f57 # v3.36.0

@@ -30,7 +30,7 @@ jobs:
         with:
           persist-credentials: false
       - id: check
-        uses: ./actions/check
+        uses: ./.github/actions/check
         with:
           action_yml_path: action.yml
           fail_on_warning: 'true'
@@ -63,7 +63,7 @@ jobs:
           echo "name=${name}" >> "${GITHUB_OUTPUT}"
           echo "Action name: ${name}"
       - id: nc
-        uses: ./actions/name-check
+        uses: ./.github/actions/name-check
         with:
           proposed_name: ${{ steps.name.outputs.name }}
           # Allow our OWN listing to "collide" with itself post-publish:
@@ -96,7 +96,7 @@ jobs:
         with:
           persist-credentials: false
       - id: bp
-        uses: ./actions/branding-preview
+        uses: ./.github/actions/branding-preview
         with:
           action_yml_path: action.yml
           output_path: ${{ runner.temp }}/branding-preview.svg

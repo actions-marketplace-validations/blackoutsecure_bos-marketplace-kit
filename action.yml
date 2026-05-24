@@ -8,11 +8,9 @@ branding:
   icon: check-circle
   color: blue
 
-# This root action is a thin delegate to ./actions/check.
+# This root action is a thin delegate to .github/actions/check.
 # The kit's other tools (guard, promote, name-check, branding-preview)
-# are accessible at their respective sub-paths under ./actions/.
-# Marketplace publishing prohibits `.github/actions/` on the default
-# branch, so the kit's runtime code lives at the top level.
+# are accessible at their respective sub-paths under .github/actions/.
 #
 # Default surface choice rationale: a Marketplace listing for a kit
 # should expose ONE thing at its root URL. The lifecycle is:
@@ -58,7 +56,7 @@ runs:
   using: composite
   steps:
     - id: check
-      uses: ./actions/check
+      uses: ./.github/actions/check
       with:
         action_yml_path: ${{ inputs.action_yml_path }}
         fail_on_warning: ${{ inputs.fail_on_warning }}

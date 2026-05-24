@@ -63,7 +63,7 @@ marketplace-kit check owner/repo
 ```
 
 If you don't want to install Python tooling, the composite actions under
-`actions/` are pure bash and runnable on any Linux host with `git`,
+`.github/actions/` are pure bash and runnable on any Linux host with `git`,
 `jq`, and `curl`.
 
 ## Style

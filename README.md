@@ -101,7 +101,7 @@ marketplace-kit check . --json
 ```
 bos-marketplace-kit/
 ├── action.yml                          # root = pre-publish `check`
-├── actions/                            # composite actions (Marketplace surface)
+├── .github/actions/                    # composite actions (Marketplace surface)
 │   ├── check/                          # pre-publish readiness validator
 │   ├── guard/                          # PR-time publish-surface gate
 │   ├── promote/                        # dev → main wipe-and-replay
@@ -118,13 +118,6 @@ bos-marketplace-kit/
 ├── src/marketplace_kit/                # Python CLI
 └── examples/                           # copy-paste workflow snippets
 ```
-
-> **Why `actions/` and not `.github/actions/`?** GitHub Marketplace
-> publishing rules prohibit `.github/workflows/` on the default branch,
-> and the kit further prohibits `.github/actions/` on `main` so the
-> entire `.github/` subtree is reserved for the dev-only CI pipeline.
-> The kit's runtime code (the composite actions a consumer invokes)
-> therefore lives at the top-level `actions/` directory.
 
 ## The dev → main publish model
 

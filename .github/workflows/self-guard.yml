@@ -50,7 +50,7 @@ jobs:
           persist-credentials: false
 
       - id: guard
-        uses: ./actions/guard
+        uses: ./.github/actions/guard
         with:
           pr_base_sha:    ${{ github.event.pull_request.base.sha }}
           pr_head_sha:    ${{ github.event.pull_request.head.sha }}

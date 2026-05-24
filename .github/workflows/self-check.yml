@@ -96,6 +96,13 @@ jobs:
           require_dependabot_alerts:    warn
           require_security_devops:      skip
           require_scorecard:            skip
+          # MP009 (no workflow files on default branch) is a soft-warn
+          # the rule itself flags as 'noisy by design on dev'. The kit
+          # IS the canonical case where dev legitimately holds workflows,
+          # and the `guard` composite enforces this as a hard fail at
+          # promote time anyway -- so skip it here to keep self-check
+          # actionable.
+          skip_checks: 'MP009'
       - name: Show outputs
         if: always()
         env:
@@ -195,9 +202,14 @@ jobs:
     name: Verify branch protection on main
     runs-on: ubuntu-latest
     timeout-minutes: 3
-    # `check` mode is read-only; safe on every PR. Token defaults to
-    # GITHUB_TOKEN, which has `metadata: read` and can call
-    # /branches/{branch}/protection in check mode.
+    # `check` mode is read-only; safe on every PR. NOTE: the GITHUB_TOKEN
+    # CANNOT read /branches/{branch}/protection -- the API requires
+    # `Administration: read`, which is NOT exposed as a workflow
+    # permission scope. The branch-protection composite now downgrades
+    # that 403 to a warn in check+warn mode, so this job stays useful
+    # for surfacing drift while keeping CI green. To get a real
+    # introspection answer here, supply a PAT or App installation
+    # token with `Administration: read` via a repo/org secret.
     permissions:
       contents: read
     steps:

@@ -310,6 +310,19 @@ runs:
         if [[ "${HTTP_CODE}" == "404" ]]; then
           warn "no branch protection on ${BP_BRANCH} (HTTP 404)"
           echo '{}' > "${CURRENT_JSON}"
+        elif [[ "${HTTP_CODE}" == "403" ]]; then
+          # 403 commonly means the token lacks Administration:read.
+          # In `check` mode with severity!=fail, downgrade to a warn
+          # so consumers without admin tokens still get useful output
+          # (the alternative would be a fatal exit on every PR).
+          # In `enforce` mode, OR check+fail, fail fast -- we can't
+          # claim compliance against a state we can't read.
+          if [[ "${BP_MODE}" == "check" && "${BP_SEVERITY}" != "fail" ]]; then
+            warn "cannot read protection on ${BP_BRANCH}: HTTP 403 -- token likely lacks 'Administration: read'. Treating as 'unknown'; consider granting 'administration: read' in the calling workflow's permissions block."
+            echo '{}' > "${CURRENT_JSON}"
+          else
+            die "GET protection failed: HTTP 403: token lacks 'Administration: read' on ${REPO}. Grant 'administration: read' (check mode) or 'administration: write' (enforce mode) in the calling workflow's permissions block, or supply a PAT/App token with those scopes."
+          fi
         elif [[ "${HTTP_CODE:0:1}" != "2" ]]; then
           die "GET protection failed: HTTP ${HTTP_CODE}: $(cat "${CURRENT_JSON}")"
         fi

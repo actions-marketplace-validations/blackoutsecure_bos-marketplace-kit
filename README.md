@@ -26,6 +26,10 @@ GitHub Marketplace Actions safely:
   Marketplace and is not a reserved category or feature slug.
 * **`branding-preview`** — render the SVG that the Marketplace will
   display, and post it as a PR comment. No more guessing.
+* **`dist-check`** — for bundled JS Actions (e.g. `@vercel/ncc`,
+  `esbuild`, `tsup`), rebuild `dist/` from `src/` and fail the PR if
+  the committed bundle is stale. Stops the classic Marketplace bug
+  where merged source changes ship with the previous build.
 
 Use it as a **composite action**, as a **reusable workflow**, or as a
 **local CLI**. Same checks. Same output.
@@ -106,7 +110,8 @@ bos-marketplace-kit/
 │   ├── guard/                          # PR-time publish-surface gate
 │   ├── promote/                        # dev → main wipe-and-replay
 │   ├── name-check/                     # Marketplace name uniqueness
-│   └── branding-preview/               # render the icon + colour SVG
+│   ├── branding-preview/                # render the icon + colour SVG
+│   └── dist-check/                      # bundled-dist freshness check (JS Actions)
 ├── .github/workflows/                  # dev-only CI; NEVER promoted to main
 │   ├── ci.yml                          # actionlint + shellcheck
 │   ├── release.yml                     # dev → main promote + tag + release
@@ -349,6 +354,42 @@ jobs:
           extra_allowlist_paths: |
             .github/dependabot.yml
 ```
+
+### Bundled-JS-Action dist freshness (`dist-check`)
+
+For JS-based Actions whose `runs.main:` points at a bundled file
+(typically `dist/index.js`, built via `@vercel/ncc`, `esbuild`, or
+`tsup`), `dist-check` rebuilds from `src/` and fails the PR if the
+committed bundle is stale. Drop it as an extra job alongside the
+checks above:
+
+```yaml
+jobs:
+  dist-check:
+    name: dist/ freshness
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - uses: blackoutsecure/bos-marketplace-kit/.github/actions/dist-check@v1
+        with:
+          # All inputs optional; sensible defaults for ncc-style projects.
+          dist_path:     'dist'
+          build_command: 'npm ci && npm run build'
+          fail_on_drift: 'true'
+```
+
+`dist-check` is opt-in (not part of the root `check` composite)
+because it is JS-specific and requires a Node toolchain on the
+runner. For non-npm projects, override `build_command` (e.g.
+`pnpm install --frozen-lockfile && pnpm build`).
 
 ## Publishing to Marketplace
 

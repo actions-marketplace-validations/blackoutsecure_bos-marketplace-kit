@@ -99,6 +99,7 @@ jobs:
             .github/actions/promote
             .github/actions/name-check
             .github/actions/branding-preview
+            .github/actions/dist-check
           extra_allowlist_paths: |
             .github/dependabot.yml
             .github/FUNDING.yml

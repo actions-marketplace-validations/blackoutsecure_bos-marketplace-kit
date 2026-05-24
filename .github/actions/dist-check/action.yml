@@ -1,0 +1,333 @@
+name: Dist freshness check
+description: >-
+  For JS-based Actions with a bundled output directory (typically built
+  via `@vercel/ncc`, `esbuild`, `tsup`, or `rollup`), verify that the
+  committed `dist/` matches what the build script would produce from
+  the current `src/`. Catches the classic Marketplace bug where a PR
+  modifies `src/` but forgets to rebuild `dist/`, causing the published
+  Action to run stale code.
+
+  Part of the `bos-marketplace-kit` toolkit. Companion to the `check`
+  composite: where `check` validates the publishing surface
+  (metadata + community-health files), `dist-check` validates the
+  runtime artifact.
+
+  Pure git + npm + bash. Assumes the caller has already set up Node
+  on the runner (via `actions/setup-node` or equivalent) — the
+  composite does not consume third-party actions itself, consistent
+  with the rest of the kit.
+
+  Three behaviours:
+
+    1. **Snapshot** the committed `dist_path` to a tmp directory.
+    2. **Rebuild** by running `build_command` (defaults to
+       `npm ci && npm run build`). The caller can override for
+       yarn / pnpm / a custom script.
+    3. **Diff** the rebuilt `dist_path` against the snapshot. Any
+       drift fails the action by default (`fail_on_drift: true`).
+       Drift is reported as a sorted newline-list of changed paths
+       via the `drift_paths` output and as a job summary table.
+
+  Outputs let downstream jobs branch on `drift_detected` (e.g. to
+  open an auto-rebuild PR) without re-running the check.
+
+inputs:
+  dist_path:
+    description: >-
+      Repo-relative path to the bundled output directory to validate.
+      Must not be absolute, must not contain `..`, must not contain
+      glob characters. Defaults to `dist` (the @vercel/ncc default).
+    required: false
+    default: 'dist'
+  build_command:
+    description: >-
+      Shell command that rebuilds `dist_path` from source. Executed
+      with `bash -e` from the repo root. Defaults to
+      `npm ci && npm run build`. Override for non-npm package managers
+      (e.g. `pnpm install --frozen-lockfile && pnpm build`,
+      `yarn install --frozen-lockfile && yarn build`).
+    required: false
+    default: 'npm ci && npm run build'
+  package_json_path:
+    description: >-
+      Repo-relative path to the `package.json` that defines the build
+      script. Used only for validation (we verify the file exists and
+      that the JSON parses). Defaults to `package.json`.
+    required: false
+    default: 'package.json'
+  fail_on_drift:
+    description: >-
+      When `true` (default), drift fails the action. When `false`,
+      drift is reported via outputs + job summary but the step exits
+      0. Use `false` in monitoring workflows that just want
+      visibility.
+    required: false
+    default: 'true'
+  skip:
+    description: >-
+      When `true`, the composite no-ops and sets
+      `drift_detected=false`. Useful for callers that conditionally
+      enable this check (e.g. only on a `dev` branch).
+    required: false
+    default: 'false'
+
+outputs:
+  drift_detected:
+    description: >-
+      `'true'` if the rebuilt `dist_path` differs from the committed
+      one, `'false'` otherwise. Always a string, never empty.
+    value: ${{ steps.diff.outputs.drift_detected }}
+  drift_paths:
+    description: >-
+      Newline-separated list of paths under `dist_path` that drifted
+      (added / modified / removed). Empty string when no drift.
+    value: ${{ steps.diff.outputs.drift_paths }}
+
+runs:
+  using: composite
+  steps:
+    - name: Validate inputs
+      id: validate
+      shell: bash
+      env:
+        DIST_PATH: ${{ inputs.dist_path }}
+        BUILD_COMMAND: ${{ inputs.build_command }}
+        PACKAGE_JSON_PATH: ${{ inputs.package_json_path }}
+        FAIL_ON_DRIFT: ${{ inputs.fail_on_drift }}
+        SKIP: ${{ inputs.skip }}
+      run: |
+        set -euo pipefail
+        # shellcheck source=../_lib/lib.sh
+        . "${GITHUB_ACTION_PATH}/../_lib/lib.sh"
+        ERR_TITLE="dist-check"
+
+        require_var DIST_PATH
+        require_var BUILD_COMMAND
+        require_var PACKAGE_JSON_PATH
+        validate_bool FAIL_ON_DRIFT
+        validate_bool SKIP
+
+        # Reject absolute / parent-traversal / glob characters in path inputs.
+        for var in DIST_PATH PACKAGE_JSON_PATH; do
+          val="${!var}"
+          case "${val}" in
+            /*)            die "${var}='${val}' must be repo-relative" ;;
+            *..*)          die "${var}='${val}' must not contain '..'" ;;
+            *'*'*|*'?'*|*'['*) die "${var}='${val}' must not contain glob characters" ;;
+            *$'\n'*|*$'\r'*) die "${var}='${val}' contains newline/CR" ;;
+          esac
+        done
+
+        # Strip trailing slash from dist_path for consistent diffs.
+        DIST_PATH="${DIST_PATH%/}"
+        printf 'dist_path=%s\n' "${DIST_PATH}" >> "${GITHUB_OUTPUT}"
+
+    - name: Short-circuit when skip=true
+      id: skip
+      if: inputs.skip == 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        printf 'drift_detected=false\n' >> "${GITHUB_OUTPUT}"
+        printf 'drift_paths=\n' >> "${GITHUB_OUTPUT}"
+        {
+          printf '## dist-check\n\n'
+          printf '_Skipped (`skip: true`)._\n'
+        } >> "${GITHUB_STEP_SUMMARY}"
+
+    - name: Pre-flight (toolchain + repo state)
+      if: inputs.skip != 'true'
+      shell: bash
+      env:
+        DIST_PATH: ${{ steps.validate.outputs.dist_path }}
+        PACKAGE_JSON_PATH: ${{ inputs.package_json_path }}
+      run: |
+        set -euo pipefail
+        # shellcheck source=../_lib/lib.sh
+        . "${GITHUB_ACTION_PATH}/../_lib/lib.sh"
+        ERR_TITLE="dist-check"
+
+        command -v node >/dev/null 2>&1 || die "node is not on PATH (set up a Node toolchain before calling dist-check)"
+        command -v npm  >/dev/null 2>&1 || die "npm is not on PATH (set up a Node toolchain before calling dist-check)"
+        command -v git  >/dev/null 2>&1 || die "git is not on PATH"
+
+        [ -f "${PACKAGE_JSON_PATH}" ] || die "${PACKAGE_JSON_PATH} not found"
+        node -e "JSON.parse(require('fs').readFileSync('${PACKAGE_JSON_PATH}','utf8'))" \
+          || die "${PACKAGE_JSON_PATH} is not valid JSON"
+
+        [ -d "${DIST_PATH}" ] || die "dist_path='${DIST_PATH}' is not an existing directory at HEAD (commit your initial build first, or set skip=true)"
+
+        # Refuse to run if the working tree under dist/ is dirty pre-build —
+        # we need a clean baseline to diff against.
+        if ! git diff --quiet -- "${DIST_PATH}" 2>/dev/null; then
+          die "working tree under '${DIST_PATH}' is dirty before build; commit or stash first"
+        fi
+        if ! git diff --cached --quiet -- "${DIST_PATH}" 2>/dev/null; then
+          die "index under '${DIST_PATH}' is dirty before build; commit or stash first"
+        fi
+
+    - name: Snapshot committed dist
+      id: snapshot
+      if: inputs.skip != 'true'
+      shell: bash
+      env:
+        DIST_PATH: ${{ steps.validate.outputs.dist_path }}
+      run: |
+        set -euo pipefail
+        SNAPSHOT_DIR="$(mktemp -d -t bos-dist-check-XXXXXX)"
+        cp -R "${DIST_PATH}/." "${SNAPSHOT_DIR}/"
+        printf 'snapshot_dir=%s\n' "${SNAPSHOT_DIR}" >> "${GITHUB_OUTPUT}"
+        printf '::group::dist-check: snapshot taken\n'
+        printf 'snapshot_dir=%s\n' "${SNAPSHOT_DIR}"
+        find "${SNAPSHOT_DIR}" -maxdepth 1 | head -20
+        printf '::endgroup::\n'
+
+    - name: Rebuild dist
+      if: inputs.skip != 'true'
+      shell: bash
+      env:
+        BUILD_COMMAND: ${{ inputs.build_command }}
+      run: |
+        set -euo pipefail
+        printf '::group::dist-check: rebuild (%s)\n' "${BUILD_COMMAND}"
+        # shellcheck disable=SC2086
+        bash -e -c "${BUILD_COMMAND}"
+        printf '::endgroup::\n'
+
+    - name: Diff rebuilt vs snapshot
+      id: diff
+      if: inputs.skip != 'true'
+      shell: bash
+      env:
+        DIST_PATH: ${{ steps.validate.outputs.dist_path }}
+        SNAPSHOT_DIR: ${{ steps.snapshot.outputs.snapshot_dir }}
+        FAIL_ON_DRIFT: ${{ inputs.fail_on_drift }}
+      run: |
+        set -euo pipefail
+        # shellcheck source=../_lib/lib.sh
+        . "${GITHUB_ACTION_PATH}/../_lib/lib.sh"
+        ERR_TITLE="dist-check"
+
+        # `diff -rq` enumerates added / modified / removed without
+        # printing file bodies (some bundles are huge). Tolerate
+        # exit-code 1 (= differences found) and 2 (= trouble).
+        diff_out="$(mktemp)"
+        rc=0
+        diff -rq "${SNAPSHOT_DIR}" "${DIST_PATH}" > "${diff_out}" 2>&1 || rc=$?
+
+        if [ "${rc}" -gt 1 ]; then
+          # Genuine error from diff itself (missing file, perms, etc.).
+          cat "${diff_out}" >&2
+          rm -f "${diff_out}"
+          die "diff failed with exit code ${rc}"
+        fi
+
+        # Normalise diff -rq output to a sorted list of dist-relative
+        # paths. Lines look like:
+        #   "Files /tmp/snap/foo and dist/foo differ"
+        #   "Only in /tmp/snap: bar"   (removed by rebuild)
+        #   "Only in dist: baz"        (added by rebuild)
+        paths_file="$(mktemp)"
+        awk -v snap="${SNAPSHOT_DIR}" -v dist="${DIST_PATH}" '
+          # "Files A and B differ"
+          /^Files / {
+            # The path appears twice; print whichever side is under
+            # the workspace dist_path so callers see in-tree paths.
+            for (i = 2; i <= NF; i++) {
+              if (index($i, dist "/") == 1 || $i == dist) {
+                print $i
+                next
+              }
+            }
+            # Fallback: strip the snapshot prefix.
+            for (i = 2; i <= NF; i++) {
+              if (index($i, snap "/") == 1) {
+                sub(snap "/", dist "/", $i)
+                print $i
+                next
+              }
+            }
+          }
+          # "Only in <dir>: <basename>"
+          /^Only in / {
+            # Parse "Only in <dir>: <name>".
+            dir = $0
+            sub(/^Only in /, "", dir)
+            sub(/:.*$/, "", dir)
+            name = $0
+            sub(/^Only in [^:]+: /, "", name)
+            # Re-root onto dist_path.
+            if (dir == snap)             { print dist "/" name; next }
+            if (index(dir, snap "/") == 1) {
+              rest = substr(dir, length(snap) + 2)
+              print dist "/" rest "/" name
+              next
+            }
+            if (dir == dist)             { print dist "/" name; next }
+            if (index(dir, dist "/") == 1) {
+              print dir "/" name
+              next
+            }
+          }
+        ' "${diff_out}" | sort -u > "${paths_file}"
+
+        if [ -s "${paths_file}" ]; then
+          {
+            printf '## dist-check\n\n'
+            printf 'Detected drift between committed `%s` and rebuilt output.\n\n' "${DIST_PATH}"
+            printf '| Path |\n'
+            printf '|------|\n'
+            while IFS= read -r p; do
+              [ -n "${p}" ] || continue
+              printf '| `%s` |\n' "${p}"
+            done < "${paths_file}"
+            printf '\nRebuild locally with the configured `build_command` and commit the result.\n'
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+          {
+            printf 'drift_detected=true\n'
+            printf 'drift_paths<<__BOS_EOF__\n'
+            cat "${paths_file}"
+            printf '__BOS_EOF__\n'
+          } >> "${GITHUB_OUTPUT}"
+
+          if [ "${FAIL_ON_DRIFT}" = "true" ]; then
+            printf '::error title=dist-check::dist/ drift detected — rebuild and commit\n' >&2
+            rm -f "${diff_out}" "${paths_file}"
+            exit 1
+          else
+            printf '::warning title=dist-check::dist/ drift detected (fail_on_drift=false)\n' >&2
+          fi
+        else
+          {
+            printf '## dist-check\n\n'
+            printf 'No drift detected — committed `%s` matches rebuilt output.\n' "${DIST_PATH}"
+          } >> "${GITHUB_STEP_SUMMARY}"
+          {
+            printf 'drift_detected=false\n'
+            printf 'drift_paths=\n'
+          } >> "${GITHUB_OUTPUT}"
+        fi
+
+        rm -f "${diff_out}" "${paths_file}"
+
+    - name: Restore snapshot on drift (best-effort)
+      if: ${{ always() && inputs.skip != 'true' && steps.snapshot.outputs.snapshot_dir != '' }}
+      shell: bash
+      env:
+        DIST_PATH: ${{ steps.validate.outputs.dist_path }}
+        SNAPSHOT_DIR: ${{ steps.snapshot.outputs.snapshot_dir }}
+      run: |
+        set -euo pipefail
+        # Restore the committed dist into the working tree so downstream
+        # jobs (e.g. tests that consume dist/index.js) see the as-committed
+        # state, not the just-rebuilt one. Best-effort; never fail the run.
+        if [ -d "${SNAPSHOT_DIR}" ] && [ -d "${DIST_PATH}" ]; then
+          rm -rf "${DIST_PATH:?}"/* "${DIST_PATH:?}"/.[!.]* 2>/dev/null || true
+          cp -R "${SNAPSHOT_DIR}/." "${DIST_PATH}/" || true
+          rm -rf "${SNAPSHOT_DIR}" || true
+        fi
+
+branding:
+  icon: 'package'
+  color: 'purple'

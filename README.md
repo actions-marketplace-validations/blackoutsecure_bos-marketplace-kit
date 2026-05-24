@@ -146,18 +146,10 @@ This kit codifies a two-branch model:
 The `promote` composite handles the wipe-and-replay. The `guard`
 composite enforces the rules during PR review.
 
-See [`docs/publishing.md`](docs/publishing.md) for the full walkthrough.
-
-## Documentation
-
-* [`docs/checks.md`](docs/checks.md) — catalog of every check, with
-  rationale and remediation.
-* [`docs/publishing.md`](docs/publishing.md) — step-by-step Marketplace
-  publish guide using this kit.
-* [`docs/architecture.md`](docs/architecture.md) — design choices: why
-  composites + workflow + CLI share one codebase, why bash-first, etc.
-* [Examples](#examples) — copy-paste workflow snippets for the common
-  use cases (below).
+See [Publishing to Marketplace](#publishing-to-marketplace) below for
+the full step-by-step walkthrough, and the
+[Check rule catalogue](#check-rule-catalogue) for the complete list
+of enforced rules.
 
 ## Examples
 
@@ -357,6 +349,420 @@ jobs:
           extra_allowlist_paths: |
             .github/dependabot.yml
 ```
+
+## Publishing to Marketplace
+
+This section walks you through publishing a Marketplace-listed Action
+using `bos-marketplace-kit`. It assumes you have a working action
+repo and the rights to publish from that repo.
+
+Marketplace has FIVE non-negotiable prerequisites:
+
+1. A single `action.yml` at the root of the **default branch**.
+2. NO workflow files (`.github/workflows/*.yml`) on the default branch.
+3. A unique `name:` that is not a GitHub user/org, not a reserved
+   category, and not a reserved feature.
+4. `branding.icon` is a Feather v4.28.0 icon name.
+5. `branding.color` is in `{white, yellow, blue, green, orange, red, purple, gray-dark}`.
+
+The kit's dev→main lifecycle is designed around these constraints. CI
+lives on `dev`; the Marketplace surface lives on `main`.
+
+### Step 1 — Set up branches
+
+Default branch on your action repo should be `main`. Working branch
+is `dev`.
+
+```bash
+git checkout -b dev
+git push -u origin dev
+```
+
+In the repo Settings → Branches, set the default branch to `main`.
+
+### Step 2 — Add the kit's CI on `dev`
+
+Create `.github/workflows/marketplace-check.yml` on `dev` (see the
+[Minimal pre-publish check](#minimal-pre-publish-check) example
+above). Then run it locally first using the CLI:
+
+```bash
+pip install bos-marketplace-kit
+marketplace-kit check
+```
+
+Fix any `MP###` or `SC###` failures before continuing. `OP###`
+warnings are optional but recommended.
+
+### Step 3 — Verify the name
+
+```bash
+marketplace-kit name-check "Your Action Name"
+```
+
+If this reports any collision, rename before publishing. Renaming
+**after** publishing requires a new repo URL — much more painful.
+
+### Step 4 — Render the branding preview
+
+In CI the `branding-preview` composite renders an SVG and uploads it
+as an artifact. Open the SVG artifact in the PR run. If the icon or
+colour is wrong, fix it in `action.yml` and re-run.
+
+### Step 5 — Add the release workflow on `dev`
+
+Create `.github/workflows/release.yml` on `dev` (see
+[File 3 in the Full lifecycle example](#full-lifecycle-check--guard--promote)
+above for the full template).
+
+The release workflow:
+
+1. Validates the SemVer tag input.
+2. Promotes `dev` → `main` using the kit's `promote` action.
+3. The `promote` action HARD-BLOCKS any `.github/workflows/**` entry
+   in the allowlist, transitively strips workflows pulled in via
+   parent directories, removes anything not in the allowlist from
+   `main`, and pushes a clean commit + tag.
+4. Creates a GitHub Release on the new tag.
+
+### Step 6 — Configure branch protection on `main`
+
+Two options, in order of preference:
+
+#### Option A: Org-level ruleset (recommended)
+
+```bash
+# From a clone of your action repo:
+export ORG=your-org
+export REPO=your-action-repo
+export BYPASS_ACTOR_ID=<your-release-bot-app-installation-id>
+
+scripts/bootstrap-ruleset.sh
+```
+
+The ruleset enforces `file_path_restriction` on `.github/workflows/**`
+at the GitHub-platform layer. No commit containing those paths can
+land on `main`, **regardless of how it got there** (PR merge, push,
+API). The bypass actor is the only identity that can push files
+matching the restriction — and it should be your release bot ONLY.
+
+#### Option B: Branch protection (fallback)
+
+If you don't have org-level ruleset access:
+
+```bash
+scripts/bootstrap-branch-protection.sh
+```
+
+This sets:
+
+* `required_status_checks`: marketplace-check
+* `enforce_admins`: true
+* `allow_force_pushes`: false
+* `allow_deletions`: false
+
+**Caveat:** Branch protection does NOT enforce file-path restrictions.
+You're relying entirely on the kit's `guard` + `promote` actions to
+keep workflows off `main`. This is brittle without the org ruleset.
+
+### Step 7 — First release
+
+From `dev`:
+
+```bash
+gh workflow run release.yml -f tag_name=v1.0.0 -f dry_run=true
+```
+
+Inspect the dry-run output:
+
+* `removed_paths` — verify nothing surprising is being deleted from `main`.
+* `removed_violations` — should be empty (or list pre-existing drift to clean up).
+
+Once happy:
+
+```bash
+gh workflow run release.yml -f tag_name=v1.0.0
+```
+
+The promote workflow will:
+
+* Push a new commit to `main` with ONLY the allowlisted paths.
+* Tag `main` at that commit with `v1.0.0`.
+* Create a GitHub Release.
+
+### Step 8 — Publish to Marketplace
+
+Navigate to your repo's Releases page on GitHub. On the `v1.0.0`
+release, click **Edit**. Tick **"Publish this Action to the GitHub
+Marketplace"**. Choose a primary category and optional secondary
+category. Click **Update release**.
+
+The action appears at `https://github.com/marketplace/actions/<your-slug>`
+within minutes.
+
+### Step 9 — Set up the guard on PRs
+
+Defense-in-depth: add `.github/workflows/marketplace-guard.yml` on
+`dev` (see
+[File 2 in the Full lifecycle example](#full-lifecycle-check--guard--promote)
+above). This runs on every PR targeting `main` and fails fast if the
+PR would introduce a prohibited path.
+
+Without the guard, you'd discover violations at promote time (too
+late — your operator typed the version and hit go). The guard
+surfaces them in the PR check list.
+
+### Updating the action
+
+1. Branch off `dev`, make changes.
+2. Open PR → `dev`. CI runs (check + guard + branding preview).
+3. Merge to `dev`.
+4. Tag and release: `gh workflow run release.yml -f tag_name=v1.0.1`.
+
+The Marketplace listing auto-updates as soon as the tag exists.
+
+### Troubleshooting
+
+**"Failed to publish: this repository contains workflow files"**
+
+Your `main` has at least one `.github/workflows/*.yml`. Find them:
+
+```bash
+git ls-tree -r --name-only main | grep '^\.github/workflows/'
+```
+
+The `promote` action will strip them automatically on the next
+release:
+
+```bash
+gh workflow run release.yml -f tag_name=v1.0.1
+```
+
+**Branding icon is wrong.** Run `marketplace-kit check` — the
+`branding-preview` composite or the local CLI will tell you the exact
+Feather icon name. Fix on `dev` and re-release.
+
+**"Action name 'X' is already taken".** Rename early. After
+publishing, the slug is permanent on your repo. Renaming requires
+creating a new repo, transferring stars, and re-publishing.
+
+**Promote fails with `removed_violations`.** Your `main` had
+`.github/workflows/**` paths before this promote. The kit removed
+them — verify with the dry-run output, then re-run.
+
+### Further reading
+
+* [Check rule catalogue](#check-rule-catalogue) below.
+* [GitHub Marketplace publishing docs](https://docs.github.com/en/actions/how-tos/create-and-publish-actions/publish-in-github-marketplace)
+* [Feather icon set](https://feathericons.com/) (v4.28.0)
+
+## Check rule catalogue
+
+The `check` action enforces a layered set of rules against your
+`action.yml`. Each rule has a stable ID across versions; skip
+individual rules with the `skip_checks` input.
+
+Rule families:
+
+| Prefix  | Severity   | Failure causes |
+|---------|------------|----------------|
+| `MP###` | **Fatal**  | Marketplace publish prerequisite missing or invalid. Action would not be acceptable to GitHub. |
+| `OP###` | Warning    | Best-practice violation. Non-fatal by default; set `fail_on_warning: true` to promote. |
+| `SC###` | **Fatal**  | Security-impacting default missing. Failure indicates a supply-chain or token-exposure risk. |
+| `CH###` | Configurable | Community-health file missing. Default `warn` or `skip` per file; promote to `fail` via the matching `require_*` input. |
+
+### MP001 — Top-level manifest keys
+
+**Required:** `name`, `description`, `runs` MUST be present at the
+root of `action.yml`. `runs:` must be a mapping containing at least
+`using:`.
+
+### MP002 — `name` is non-empty
+
+`name:` must be a non-empty string. Marketplace displays this on the
+listing card and across search results.
+
+### MP003 — `description` is non-empty
+
+`description:` is the one-line subtitle on the Marketplace card. See
+also: [OP001](#op001--description-length).
+
+### MP004 — `runs.using` is present
+
+`runs:` must declare an execution model: `composite`, `node20` (or
+newer LTS), or `docker`. Set `runs.using: composite` for most
+shell-driven actions.
+
+### MP005 — `branding.icon` is present
+
+Marketplace requires a Feather icon name in `branding.icon`. The
+icon set is pinned to Feather v4.28.0 by GitHub. Use the kit's
+`branding-preview` action to render the resulting card before
+pushing.
+
+```yaml
+branding:
+  icon: check-circle
+  color: green
+```
+
+### MP006 — `branding.color` is in the allowed enum
+
+Allowed: `white`, `yellow`, `blue`, `green`, `orange`, `red`,
+`purple`, `gray-dark`. No hex codes, no other names.
+
+### MP007 — `action.yml` lives at the repo root
+
+Marketplace ONLY detects a single manifest at the root of the default
+branch. Subdirectory manifests (e.g. `.github/actions/foo/action.yml`)
+are NOT listable on Marketplace. The `promote` action's allowlist
+should include `action.yml`.
+
+### MP008 — Name is not too short
+
+Marketplace rejects single-character action names and very short
+names that collide with reserved features. Use a name of at least 3
+characters and run the kit's `name-check` action to validate
+availability.
+
+### MP009 — Description is not too short
+
+A description shorter than 10 characters is unlikely to be useful on
+the Marketplace card and may be rejected. Expand to a complete
+sentence (~30-125 chars).
+
+### OP001 — Description length
+
+Marketplace truncates description >125 characters in card view.
+Tighten the description to a single short sentence; use `README.md`
+for elaboration.
+
+### OP003 — `author` is set
+
+Optional but strongly recommended. Marketplace shows the author on
+the listing card. Add `author: Your Org Name`.
+
+### OP004 — Composite actions declare a `shell:` on each `run:` step
+
+GitHub does NOT default the shell for composite-action run steps —
+omitting `shell:` is an error at runtime. Add `shell: bash` (or
+another supported shell) to every `run:` step in a composite manifest.
+
+### SC001 — Third-party actions are pinned by SHA
+
+Tag/branch refs (`@v4`, `@main`) are mutable. A compromised tag move
+can inject arbitrary code into your runner. SHA pins (`@<40-hex>`)
+are immutable. Use Dependabot or `bos-upstream-watcher` to bump pins
+automatically.
+
+```yaml
+- uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+```
+
+### SC003 — Security policy is discoverable
+
+Public Marketplace listings should advertise a private reporting
+channel for security issues. The check looks for any of:
+
+* `SECURITY.md`, `.github/SECURITY.md`, or `docs/SECURITY.md` in the
+  calling repo,
+* the same files in the org's `.github` repository (when
+  `check_org_health: true` and a token is supplied), **or**
+* a README that mentions `security policy`, `SECURITY.md`, or
+  `report ... vulnerability`.
+
+Strictness is controlled by the `require_security` input:
+
+| Value  | Behaviour on a missing policy                                                                     |
+|--------|---------------------------------------------------------------------------------------------------|
+| `fail` | Hard failure — the README escape hatch is also disabled at this level.                            |
+| `warn` | **Default.** Records a warning. The action overall still passes unless `fail_on_warning: true`.   |
+| `skip` | Rule short-circuits to a `skip` status — equivalent to listing `SC003` in `skip_checks`.          |
+
+Generate a template:
+
+```bash
+marketplace-kit generate-policy security \
+  --owner my-org --repo my-action --email security@example.com
+```
+
+### CH001-CH006 — Community-health files (org-aware)
+
+The kit checks a small set of community-health files Marketplace
+consumers expect on a popular public action. Each rule looks in this
+repo first; if the file is missing, it falls back to the org's
+`.github` repository (canonical home for shared defaults) when
+`check_org_health: true` and `github_token` is non-empty. If found
+in either location the rule passes; the report message records which
+location was used.
+
+| ID    | File                                                              | Default policy | Generator kind     |
+|-------|-------------------------------------------------------------------|----------------|--------------------|
+| CH001 | `CODE_OF_CONDUCT.md` (also `.github/`, `docs/`)                   | `warn`         | `code-of-conduct`  |
+| CH002 | `CONTRIBUTING.md` (also `.github/`, `docs/`)                      | `warn`         | `contributing`     |
+| CH003 | `SUPPORT.md` (also `.github/`, `docs/`)                           | `skip`         | `support`          |
+| CH004 | `.github/ISSUE_TEMPLATE/` directory or `.github/ISSUE_TEMPLATE.md` | `skip`         | `issue-bug` / `issue-feature` |
+| CH005 | `.github/PULL_REQUEST_TEMPLATE.md`                                | `skip`         | `pr-template`      |
+| CH006 | `.github/FUNDING.yml`                                             | `skip`         | `funding`          |
+
+Each rule takes a matching `require_*` input (`require_code_of_conduct`,
+`require_contributing`, `require_support`, `require_issue_templates`,
+`require_pr_template`, `require_funding`) with values `fail | warn |
+skip` and the same semantics as `require_security` above.
+
+#### Org-aware lookup
+
+Set `check_org_health: true` (default) and pass `github_token:
+${{ github.token }}` to enable the org-wide fallback. The check
+makes at most:
+
+* **one** `GET /repos/{owner}/.github` call to confirm the org
+  health repo exists, and
+* **one** `GET /repos/{owner}/.github/contents/{path}` per missing
+  file (so 0-6 additional cheap API calls per run).
+
+Override the destination repo with `org_health_repo: my-org/.github`
+if your org uses a non-default location.
+
+#### Generate a starter template
+
+The kit ships a small, opinionated set of policy templates and a CLI
+to emit them with placeholder substitution:
+
+```bash
+# List available kinds.
+marketplace-kit generate-policy list
+
+# Emit to the canonical path.
+marketplace-kit generate-policy code-of-conduct \
+  --owner my-org --repo my-action --email contact@example.com
+
+# Or just print to stdout.
+marketplace-kit generate-policy contributing --stdout
+```
+
+Placeholders: `{{owner}}`, `{{repo_name}}`, `{{contact_email}}`,
+`{{project_name}}`. Unsubstituted placeholders fall back to
+conservative defaults (`YOUR-ORG`, CWD basename,
+`security@example.com`).
+
+The `--ai` flag is reserved for a future iteration that drafts the
+policy using a language model; today it falls back to the static
+template and prints a notice.
+
+### Adding new rules
+
+Open a PR against `dev` that:
+
+1. Adds the rule to `.github/actions/check/action.yml`.
+2. Documents it in the [Check rule catalogue](#check-rule-catalogue)
+   section above with a stable ID.
+3. Adds a unit test under `tests/` covering the failure case.
+4. Bumps the kit's minor version.
+
+The kit promises stability for `MP###`/`OP###`/`SC###`/`CH###` rule
+IDs across minor versions — adding a rule never reuses an existing
+ID.
 
 ## Versioning
 

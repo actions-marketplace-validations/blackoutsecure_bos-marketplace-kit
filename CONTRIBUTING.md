@@ -40,7 +40,7 @@ PRs that add a new check rule MUST include:
 
 * The rule ID (next sequential `MP###`/`OP###`/`SC###`).
 * A test fixture under `tests/fixtures/`.
-* A row in [`docs/checks.md`](docs/checks.md).
+* A row in the [Check rule catalogue](README.md#check-rule-catalogue) in the README.
 * A `remediation` string on the check (not just a failure message).
 
 ## Local development

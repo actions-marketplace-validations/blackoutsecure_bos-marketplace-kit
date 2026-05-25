@@ -84,21 +84,25 @@ jobs:
 ```bash
 pipx install bos-marketplace-kit
 
-# Lint the current directory
-marketplace-kit check .
+# Validate action.yml in the current directory against MP/OP/SC rules
+marketplace-kit check
 
-# Lint a remote repo without cloning (uses GitHub API)
-marketplace-kit check owner/repo
-
-# Check a proposed action name
+# Check that a proposed action name is available on the Marketplace
 marketplace-kit name-check "my-cool-deployer"
 
-# Get JSON for CI/dashboards
-marketplace-kit check . --json
+# Full readiness summary (manifest + community-health files + branches)
+marketplace-kit doctor
+
+# Render a markdown table of inputs/outputs for your README
+marketplace-kit doc-inputs
+
+# Bootstrap a community-health file from a template
+marketplace-kit generate-policy security --owner my-org
+marketplace-kit generate-policy list   # show all available kinds
 ```
 
-> The CLI is in active development. The composite actions are the
-> shipping interface today.
+The composite actions are the canonical Marketplace surface; the CLI
+mirrors the most useful subset for local sanity-checks.
 
 ## What's in the box
 
@@ -1141,17 +1145,17 @@ read-only to humans — PRs opened against `main` will be closed.
 ### Local development
 
 ```bash
-# Install dev deps (Python 3.11+)
-pipx install --editable .[dev]
+# Install dev deps (Python 3.10+)
+pip install -e '.[dev]'
 
-# Run all local checks (lint + tests). This is what CI runs.
-make check
+# Run the test suite (this is what CI runs)
+python3 -m pytest
 
 # Run the CLI against the local repo
-marketplace-kit check .
+marketplace-kit check
 
-# Run the CLI against a remote repo (uses GitHub API, no clone)
-marketplace-kit check owner/repo
+# Render a markdown table of inputs/outputs from action.yml
+marketplace-kit doc-inputs
 ```
 
 The composite actions under `.github/actions/` are pure bash and
@@ -1162,11 +1166,13 @@ needed if you only want to exercise the action surface.
 
 * **Bash**: `shellcheck` clean at `--severity=warning`,
   `set -euo pipefail`, `${VAR}` braces consistently.
-* **Python**: `ruff` + `black` defaults, type hints on public APIs.
+* **Python**: type hints on public APIs, stdlib only in the CLI.
 * **YAML (workflows)**: `actionlint` clean, pin third-party actions
   by SHA (not tag), minimise `permissions:` per job.
 
-`make lint` runs all of the above.
+Lint configs live under `.markdownlint.yaml`, `.yamllint.yml`, and
+`.shellcheckrc`. The `lint` composite action under `.github/actions/lint/`
+runs the full battery the same way CI does.
 
 ### Adding a new check rule
 

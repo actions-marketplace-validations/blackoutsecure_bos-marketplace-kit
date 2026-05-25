@@ -1,10 +1,23 @@
 version: 2
+
+# NOTE: This repo uses a dev -> main Marketplace promote model
+# (`.github/workflows/release.yml`). Dependabot's `dependabot.yml`
+# MUST live on the default branch (main) — that's a Dependabot
+# constraint — but PRs need to target `dev`, where the SHA pins are
+# the source of truth. Without `target-branch: dev` below, Dependabot
+# PRs land on main and get wiped by the next promote run, creating a
+# treadmill. The override is applied INSIDE the managed-by-upstream
+# markers because there is no live sync from bos-automation-hub into
+# this repo (one-time paste only) — if a future sync is wired up, add
+# a `target-branch` knob to the upstream template instead of dropping
+# this override.
 updates:
 
 # >>> bos-automation-hub:dependabot_actions >>>
 # Managed by https://github.com/blackoutsecure/bos-automation-hub — do not edit between markers.
   - package-ecosystem: github-actions
     directory: /
+    target-branch: dev
     schedule:
       interval: weekly
       day: monday
@@ -30,6 +43,7 @@ updates:
 # Managed by https://github.com/blackoutsecure/bos-automation-hub — do not edit between markers.
   - package-ecosystem: pip
     directory: /
+    target-branch: dev
     schedule:
       interval: weekly
       day: monday

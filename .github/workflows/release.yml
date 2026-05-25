@@ -353,6 +353,17 @@ jobs:
           # `.github/FUNDING.yml` extra below is a no-op unless a
           # per-repo override is intentionally added.
           # See https://docs.github.com/communities/setting-up-your-project-for-healthy-contributions/creating-a-default-community-health-file
+          #
+          # Deliberately NOT promoted to main (dev-only):
+          #   .editorconfig, .gitattributes, .gitignore, .markdownlint.yaml,
+          #   .yamllint.yml, .shellcheckrc — these are dev-loop concerns
+          #   (IDE behaviour, merge attrs, build artefacts, in-tree lint
+          #   configs). `main` is a Marketplace artefact rebuilt wholesale
+          #   by promote — no editing, merging, building, or in-tree
+          #   linting happens against it, so shipping them creates the
+          #   illusion of an editable branch where there isn't one.
+          #   Consumers of the `lint` composite read configs from their
+          #   own repo, not from the kit's bundled copy.
           allowlist_paths: |
             action.yml
             LICENSE
@@ -371,12 +382,6 @@ jobs:
             .github/CODEOWNERS
             .github/dependabot.yml
             .github/FUNDING.yml
-            .editorconfig
-            .gitattributes
-            .gitignore
-            .markdownlint.yaml
-            .yamllint.yml
-            .shellcheckrc
           tag_name:       ${{ needs.compute-tag.outputs.tag_name }}
           commit_message: 'release: ${{ needs.compute-tag.outputs.tag_name }}'
           dry_run:        ${{ inputs.dry_run }}

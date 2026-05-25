@@ -9,11 +9,12 @@
 #   1. preflight — confirms dev's HEAD passed every required CI
 #                  check before we promote. Cheap (one API call);
 #                  prevents shipping from a red SHA.
-#   2. compute-tag — if `bump` was used (patch/minor/major), reads
-#                  the latest `vX.Y.Z` tag and computes the next
-#                  one. Otherwise the operator-supplied `tag_name`
-#                  passes through unchanged. Exactly one of
-#                  {tag_name, bump != none} must be provided.
+#   2. compute-tag — if `bump` was used (patch/minor/major, default
+#                  `patch`), reads the latest `vX.Y.Z` tag and
+#                  computes the next one. Otherwise the operator-
+#                  supplied `tag_name` passes through unchanged.
+#                  Exactly one of {tag_name, bump != none} must be
+#                  provided.
 #   3. promote   — `./.github/actions/promote` allowlists files
 #                  from dev -> main, hard-blocks `.github/workflows/**`,
 #                  validates the SemVer tag, tags main with `vX.Y.Z`.
@@ -39,16 +40,17 @@ name: Release · promote dev → main + tag + publish
       bump:
         description: >-
           Auto-compute the next tag from the latest `vX.Y.Z` tag.
-          Ignored when `tag_name` is non-empty. Use `none` to require
-          an explicit `tag_name`.
+          Ignored when `tag_name` is non-empty. Defaults to `patch`
+          so manual dispatch with no inputs ships the next patch
+          release. Pick `none` to force an explicit `tag_name`.
         required: false
         type: choice
-        default: 'none'
+        default: 'patch'
         options:
-          - none
           - patch
           - minor
           - major
+          - none
       release_name:
         description: 'Release title (defaults to the resolved tag).'
         required: false

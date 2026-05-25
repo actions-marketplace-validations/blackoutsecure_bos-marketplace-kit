@@ -472,6 +472,32 @@ def _render_template(text: str, **subs: str) -> str:
     return text
 
 
+def _render_policy(
+    kind: str,
+    owner: str | None,
+    repo: str | None,
+    project_name: str | None,
+    email: str | None,
+) -> tuple[_PolicyKind, str]:
+    """Resolve placeholder values and render ``kind``'s template.
+
+    Shared by ``generate-policy`` (one-kind-at-a-time, flexible
+    --output / --stdout) and ``install`` (canonical-path scaffolder,
+    optional --all). Keeping the placeholder defaults in one place
+    means both commands substitute identically.
+    """
+    spec = POLICY_KINDS[kind]
+    repo_name = repo or Path.cwd().name
+    rendered = _render_template(
+        _load_template(spec.template),
+        owner=owner or "YOUR-ORG",
+        repo_name=repo_name,
+        contact_email=email or "security@example.com",
+        project_name=project_name or repo_name,
+    )
+    return spec, rendered
+
+
 def cmd_generate_policy(args: argparse.Namespace) -> int:
     kind = args.kind
     if kind == "list":
@@ -486,14 +512,12 @@ def cmd_generate_policy(args: argparse.Namespace) -> int:
         )
         return 2
 
-    spec = POLICY_KINDS[kind]
-    repo_name = args.repo or Path.cwd().name
-    rendered = _render_template(
-        _load_template(spec.template),
-        owner=args.owner or "YOUR-ORG",
-        repo_name=repo_name,
-        contact_email=args.email or "security@example.com",
-        project_name=args.project_name or repo_name,
+    spec, rendered = _render_policy(
+        kind,
+        owner=args.owner,
+        repo=args.repo,
+        project_name=args.project_name,
+        email=args.email,
     )
 
     if args.ai:
@@ -517,6 +541,136 @@ def cmd_generate_policy(args: argparse.Namespace) -> int:
     out_path.write_text(rendered, encoding="utf-8")
     sys.stderr.write(f"wrote {spec.label} → {out_path} ({len(rendered)} bytes)\n")
     return 0
+
+
+# ---------------------------------------------------------------------------
+# Install — scaffold one or every policy kind at its canonical path
+# ---------------------------------------------------------------------------
+
+# Kinds installed by `install --all`. Excludes templates that are
+# legitimately optional or that ship with strong opinions a maintainer
+# usually wants to opt into per repo:
+#   * `scorecard-workflow`, `security-devops-workflow` — overlap with
+#     CodeQL + GHAS default-setup; treat as opt-in.
+#   * `shellcheckrc` — only useful when a repo actually ships shell
+#     scripts; skip by default.
+INSTALL_ALL_KINDS: tuple[str, ...] = (
+    "security",
+    "code-of-conduct",
+    "contributing",
+    "support",
+    "issue-bug",
+    "issue-feature",
+    "pr-template",
+    "funding",
+    "dependabot",
+    "codeql-workflow",
+    "markdownlint",
+    "yamllint",
+)
+
+
+def _install_one(
+    kind: str,
+    *,
+    owner: str | None,
+    repo: str | None,
+    project_name: str | None,
+    email: str | None,
+    force: bool,
+    dry_run: bool,
+    base: Path,
+) -> tuple[str, _PolicyKind, Path]:
+    """Install ``kind`` at its canonical path under ``base``.
+
+    Returns ``(status, spec, out_path)`` where ``status`` is one of
+    ``write``, ``skip`` (already present, no --force), ``force``
+    (overwrote), or ``dry-write`` / ``dry-skip`` under --dry-run.
+    """
+    spec, rendered = _render_policy(
+        kind,
+        owner=owner,
+        repo=repo,
+        project_name=project_name,
+        email=email,
+    )
+    out_path = base / spec.default_out
+    existed = out_path.exists()
+
+    if existed and not force:
+        return ("dry-skip" if dry_run else "skip", spec, out_path)
+
+    status = (
+        ("dry-force" if dry_run else "force") if existed
+        else ("dry-write" if dry_run else "write")
+    )
+
+    if not dry_run:
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(rendered, encoding="utf-8")
+
+    return (status, spec, out_path)
+
+
+def cmd_install(args: argparse.Namespace) -> int:
+    kinds: list[str]
+    if args.all:
+        if args.kind not in (None, "all"):
+            sys.stderr.write(
+                "error: pass either KIND or --all, not both.\n"
+            )
+            return 2
+        kinds = list(INSTALL_ALL_KINDS)
+    else:
+        if not args.kind:
+            sys.stderr.write(
+                "error: KIND is required (or pass --all). "
+                f"Choices: {sorted(POLICY_KINDS)}.\n"
+            )
+            return 2
+        if args.kind not in POLICY_KINDS:
+            sys.stderr.write(
+                f"error: unknown kind {args.kind!r}. "
+                f"Choices: {sorted(POLICY_KINDS)}.\n"
+            )
+            return 2
+        kinds = [args.kind]
+
+    base = Path(args.cwd) if args.cwd else Path.cwd()
+    if not base.is_dir():
+        sys.stderr.write(f"error: --cwd {base} is not a directory.\n")
+        return 2
+
+    written = forced = skipped = 0
+    for kind in kinds:
+        status, spec, out_path = _install_one(
+            kind,
+            owner=args.owner,
+            repo=args.repo,
+            project_name=args.project_name,
+            email=args.email,
+            force=args.force,
+            dry_run=args.dry_run,
+            base=base,
+        )
+        rel = out_path.relative_to(base) if out_path.is_relative_to(base) else out_path
+        sys.stderr.write(f"  [{status:<9}] {spec.label:<35} -> {rel}\n")
+        if status.endswith("write"):
+            written += 1
+        elif status.endswith("force"):
+            forced += 1
+        elif status.endswith("skip"):
+            skipped += 1
+
+    prefix = "would " if args.dry_run else ""
+    sys.stderr.write(
+        f"{prefix}install summary: {written} written, "
+        f"{forced} overwritten, {skipped} skipped (already present).\n"
+    )
+    if args.dry_run:
+        sys.stderr.write("dry-run: no files modified.\n")
+    return 0
+
 
 
 # ---------------------------------------------------------------------------
@@ -573,6 +727,32 @@ def _build_parser() -> argparse.ArgumentParser:
     p_gp.add_argument("--ai", action="store_true",
         help="(Reserved) ask an AI to draft the policy. Currently a no-op.")
     p_gp.set_defaults(func=cmd_generate_policy)
+
+    p_inst = sub.add_parser("install",
+        help="Scaffold one or every policy file at its canonical path "
+             "(`generate-policy` with safe defaults).")
+    p_inst.add_argument("kind", nargs="?",
+        help="Policy kind to install. Omit when using --all. Choices: "
+             + ", ".join(sorted(POLICY_KINDS)) + ".")
+    p_inst.add_argument("--all", action="store_true",
+        help="Install every recommended kind that isn't already present "
+             f"({', '.join(INSTALL_ALL_KINDS)}).")
+    p_inst.add_argument("--owner",
+        help="Org / user slug to substitute for {{owner}}.")
+    p_inst.add_argument("--repo",
+        help="Repository name for {{repo_name}}. Defaults to --cwd basename.")
+    p_inst.add_argument("--project-name",
+        help="Human-readable project name (defaults to --repo).")
+    p_inst.add_argument("--email",
+        help="Contact email for {{contact_email}}.")
+    p_inst.add_argument("--cwd",
+        help="Repository root to install into. Defaults to the current "
+             "working directory.")
+    p_inst.add_argument("--force", "-f", action="store_true",
+        help="Overwrite files that already exist.")
+    p_inst.add_argument("--dry-run", action="store_true",
+        help="Print what would be written without touching the filesystem.")
+    p_inst.set_defaults(func=cmd_install)
 
     p_v = sub.add_parser("version", help="Print version and exit.")
     p_v.set_defaults(func=cmd_version)

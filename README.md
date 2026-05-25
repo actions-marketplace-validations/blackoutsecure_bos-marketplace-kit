@@ -99,6 +99,10 @@ marketplace-kit doc-inputs
 # Bootstrap a community-health file from a template
 marketplace-kit generate-policy security --owner my-org
 marketplace-kit generate-policy list   # show all available kinds
+
+# Install every recommended community-health, supply-chain, and lint
+# file at its canonical path (refuses to overwrite without --force)
+marketplace-kit install --all --owner my-org
 ```
 
 The composite actions are the canonical Marketplace surface; the CLI
@@ -1015,6 +1019,38 @@ Placeholders: `{{owner}}`, `{{repo_name}}`, `{{contact_email}}`,
 `{{project_name}}`. Unsubstituted placeholders fall back to
 conservative defaults (`YOUR-ORG`, CWD basename,
 `security@example.com`).
+
+#### Install one (or every) recommended file
+
+`generate-policy` is the low-level emitter. `install` is the safe
+one-shot scaffolder you reach for when bootstrapping a fresh repo
+— it writes to canonical paths, refuses to overwrite existing files
+by default, and can install every recommended kind in one call:
+
+```bash
+# Scaffold a single kind at its canonical path. Refuses to
+# overwrite an existing file — pass --force to replace it.
+marketplace-kit install codeql-workflow --owner my-org
+
+# Install every recommended community-health, supply-chain, and
+# lint file that isn't already present. Existing files are left
+# alone (use --force to overwrite all). Use --dry-run to preview.
+marketplace-kit install --all --owner my-org
+
+# Preview without touching anything.
+marketplace-kit install --all --owner my-org --dry-run
+```
+
+What `install --all` covers: `security`, `code-of-conduct`,
+`contributing`, `support`, `issue-bug`, `issue-feature`,
+`pr-template`, `funding`, `dependabot`, `codeql-workflow`,
+`markdownlint`, `yamllint`. Opt-in kinds (`scorecard-workflow`,
+`security-devops-workflow`, `shellcheckrc`) must be installed
+explicitly by name to avoid surprising consumers who don't want them.
+
+After `install`, run `marketplace-kit check` to confirm the kit's
+rules pass — the canonical pipeline is **check → install → commit →
+check passes → CI green**.
 
 #### `auto_generate_missing` — reserved for a future iteration
 

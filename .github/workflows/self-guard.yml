@@ -8,18 +8,17 @@
 # `main` would find no workflows. See the guard composite's docstring
 # for the security analysis.
 #
-# Manual `workflow_dispatch` is available from the Actions tab —
-# useful for validating the guard against current `dev` outside of a
-# PR cycle. Under dispatch, `CHECK_PR_DIFF` evaluates to `false` and
-# the diff codepath is skipped; the tree-state and required-paths
-# checks still run against the dispatched ref.
-#
-# `push:` triggers are intentionally absent. The guard's whole point
-# is to enforce Marketplace publishing constraints on the default
-# branch (`main`). Running it against `dev` is meaningless — `dev`
+# Manual `workflow_dispatch` is available from the Actions tab and
+# always validates the current `main` tree, regardless of which branch
+# the dispatch is triggered from. The guard's purpose is to enforce
+# Marketplace publishing constraints on the default branch (`main`),
+# so running it against any other ref is meaningless — `dev`
 # legitimately holds `.github/workflows/**` and other paths blocked
-# on `main`, so a push-to-dev run would always fail. Use the
-# pre-promote hook in `release.yml` (it invokes promote, which
+# on `main`. Under dispatch, `CHECK_PR_DIFF` is `false`; tree-state
+# and required-paths checks run against `main`.
+#
+# `push:` triggers are intentionally absent for the same reason.
+# Use the pre-promote hook in `release.yml` (it invokes promote, which
 # already runs the same blocked/required-paths logic on the
 # allowlisted tree) for the equivalent pre-release check.
 #
@@ -50,13 +49,16 @@ jobs:
         env:
           EVENT_NAME:  ${{ github.event_name }}
           PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
-          GITHUB_REF:  ${{ github.ref }}
         run: |
           set -euo pipefail
+          # PR runs: check out the PR's base branch (always `main` here,
+          # since the trigger filters `branches: [main]`).
+          # Dispatch runs: always check out `main`. Running the guard
+          # against any other ref would always fail by design.
           if [ "${EVENT_NAME}" = "pull_request_target" ] && [ -n "${PR_BASE_REF}" ]; then
             REF="${PR_BASE_REF}"
           else
-            REF="${GITHUB_REF}"
+            REF="main"
           fi
           echo "ref=${REF}" >> "${GITHUB_OUTPUT}"
 

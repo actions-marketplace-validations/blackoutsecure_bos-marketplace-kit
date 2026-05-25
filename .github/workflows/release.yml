@@ -142,25 +142,39 @@ jobs:
             -H 'X-GitHub-Api-Version: 2022-11-28' \
             "repos/${REPO}/commits/${DEV_SHA}/check-runs?per_page=100")"
 
+          # Stash the JSON in a temp file so the Python helper can
+          # read it from disk (stdin is reserved for the heredoc body).
+          RAW_FILE="$(mktemp)"
+          trap 'rm -f "${RAW_FILE}"' EXIT
+          printf '%s' "${RAW}" > "${RAW_FILE}"
+
           fail=0
           missing=0
           while IFS= read -r required; do
             [ -z "${required}" ] && continue
             # Find the check by name; pick the most recent if there
             # are multiple (rerun, matrix, etc.) — we want the last
-            # observed conclusion.
-            line="$(printf '%s' "${RAW}" | python3 -c '
-          import json, sys
-          name = sys.argv[1]
-          data = json.load(sys.stdin)
+            # observed conclusion. The Python helper runs from a
+            # quoted heredoc so the f-string can use single quotes
+            # inside its expressions (Python <3.12 disallows backslashes
+            # in f-string braces).
+            line="$(REQUIRED_NAME="${required}" RAW_FILE="${RAW_FILE}" python3 <<'PY'
+          import json, os
+          name = os.environ["REQUIRED_NAME"]
+          with open(os.environ["RAW_FILE"], encoding="utf-8") as fh:
+              data = json.load(fh)
           runs = [r for r in data.get("check_runs", []) if r.get("name") == name]
           if not runs:
               print("MISSING|||")
-              sys.exit(0)
-          runs.sort(key=lambda r: r.get("completed_at") or r.get("started_at") or "", reverse=True)
+              raise SystemExit(0)
+          runs.sort(
+              key=lambda r: r.get("completed_at") or r.get("started_at") or "",
+              reverse=True,
+          )
           r = runs[0]
-          print(f"{r.get(\"status\",\"\")}|{r.get(\"conclusion\") or \"\"}|{r.get(\"html_url\",\"\")}")
-          ' "${required}")"
+          print(f"{r.get('status','')}|{r.get('conclusion') or ''}|{r.get('html_url','')}")
+          PY
+          )"
             status="${line%%|*}"
             rest="${line#*|}"
             conclusion="${rest%%|*}"

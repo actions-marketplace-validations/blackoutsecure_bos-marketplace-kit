@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "bos-marketplace-kit"
-version = "0.1.0"
+version = "0.1.1"
 description = "Local CLI for the BOS Marketplace Kit — validate, preview, and dry-run Marketplace Action releases without pushing."
 readme = "README.md"
 requires-python = ">=3.10"

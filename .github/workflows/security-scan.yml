@@ -1,0 +1,158 @@
+# Consolidated security scan: kit composite (posture + actionlint + gitleaks +
+# shellcheck) AND CodeQL matrix, both calling the hub-side reusable so a
+# single change in `bos-automation-hub` propagates here on next run.
+#
+# Replaces what used to be two separate workflows in this repo:
+#   * `codeql.yml`   — CodeQL matrix only (`enable_kit_composite: false`)
+#   * `self-scan.yml`— kit composite only, with PAT-aware advanced mode
+# The hub reusable now accepts an optional `scanning_pat` secret +
+# `use_advanced_pat` input, so both stages can run from one caller without
+# losing the PS002/PS003 posture probes that need elevated API scope.
+#
+# Why this kit calls the reusable DIRECTLY rather than via the Marketplace
+# Launchpad: this kit is the PRODUCER of the launchpad's `check` / `lint` /
+# `guard` / `promote` / `branding-preview` / `name-check` composite actions.
+# Calling the full launchpad would invoke the PUBLISHED `@v0.1.x` composites
+# against this repo's `dev` source, defeating the in-tree testing model that
+# `self-check.yml` / `self-guard.yml` provide (local `./` composites against
+# current dev code). The security scan reusable has no such producer/consumer
+# tension and is safe to consume directly.
+#
+# Transitive invocations performed by the hub-side reusable (kept inline here
+# so audit tooling and the marketplace-kit CQ001 detector can see them at
+# this repo's surface):
+#
+#   uses: blackoutsecure/bos-code-scanning-kit@v1
+#   uses: github/codeql-action/init@7211b7c8077ea37d8641b6271f6a365a22a5fbfa    # v4.36.0
+#   uses: github/codeql-action/analyze@7211b7c8077ea37d8641b6271f6a365a22a5fbfa # v4.36.0
+#
+# Bump the SHAs above in lockstep with
+# `bos-automation-hub/.github/workflows/repo-security-scan.yml`.
+
+name: Security scan
+
+"on":
+  push:
+    branches: [dev]
+  pull_request:
+    branches: [dev]
+  workflow_dispatch:
+    inputs:
+      fail_on:
+        description: 'Kit composite fail policy (`fail` | `never`).'
+        required: false
+        type: choice
+        default: 'never'
+        options: ['never', 'fail']
+      advanced_scanning:
+        description: 'Enable advanced posture probes (PS002/PS003) via SCANNING_PAT.'
+        required: false
+        type: boolean
+        default: false
+      require_pat:
+        description: 'Fail fast if advanced_scanning is requested but SCANNING_PAT is not configured.'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-scan-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Resolve advanced-PAT mode + verify secret availability before the scan
+  # reusable runs. Mirrors the resolution pattern used elsewhere (dispatch
+  # input > repo/org var fallback) so behaviour is consistent across kits.
+  # `require_pat` enforces fail-fast when the PAT was demanded but missing,
+  # preventing a silent baseline-only degradation.
+  # ---------------------------------------------------------------------------
+  preflight:
+    name: Preflight (PAT mode)
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      use_advanced_pat: ${{ steps.mode.outputs.use_advanced_pat }}
+    steps:
+      - id: mode
+        name: Resolve advanced PAT mode
+        env:
+          INPUT_ADVANCED: ${{ github.event_name == 'workflow_dispatch' && inputs.advanced_scanning && 'true' || '' }}
+          INPUT_REQUIRE_PAT: ${{ github.event_name == 'workflow_dispatch' && inputs.require_pat && 'true' || '' }}
+          VAR_ADVANCED: ${{ vars['BOS_SCAN_ADVANCED'] }}
+          VAR_REQUIRE_PAT: ${{ vars['BOS_SCAN_REQUIRE_PAT'] }}
+          HAS_PAT: ${{ secrets['SCANNING_PAT'] != '' && 'true' || 'false' }}
+        run: |
+          set -euo pipefail
+
+          is_true() {
+            case "${1:-}" in
+              true|TRUE|True|1|yes|YES|on|ON) return 0 ;;
+              *) return 1 ;;
+            esac
+          }
+
+          advanced_requested=false
+          if [ -n "${INPUT_ADVANCED}" ]; then
+            advanced_requested=true
+          elif is_true "${VAR_ADVANCED}"; then
+            advanced_requested=true
+          fi
+
+          require_pat=false
+          if [ -n "${INPUT_REQUIRE_PAT}" ]; then
+            require_pat=true
+          elif is_true "${VAR_REQUIRE_PAT}"; then
+            require_pat=true
+          fi
+
+          use_advanced_pat=false
+          if [ "${advanced_requested}" = "true" ] && [ "${HAS_PAT}" = "true" ]; then
+            use_advanced_pat=true
+          fi
+
+          if [ "${advanced_requested}" = "true" ] && [ "${HAS_PAT}" != "true" ] && [ "${require_pat}" = "true" ]; then
+            echo "::error::Advanced scanning was requested, but secret SCANNING_PAT is not configured."
+            exit 1
+          fi
+
+          if [ "${advanced_requested}" = "true" ] && [ "${HAS_PAT}" != "true" ]; then
+            echo "::warning::Advanced scanning requested but SCANNING_PAT is missing. Falling back to GITHUB_TOKEN (PS002/PS003 will be skipped)."
+          fi
+
+          echo "use_advanced_pat=${use_advanced_pat}" >> "${GITHUB_OUTPUT}"
+
+  # ---------------------------------------------------------------------------
+  # Consolidated scan: kit composite + CodeQL matrix, both via the hub
+  # reusable. `secrets: inherit` forwards SCANNING_PAT (if configured at
+  # the org/repo level) so the reusable can pass it to the kit composite
+  # only when `use_advanced_pat` is true.
+  #
+  # `codeql_languages`: `["python", "actions"]` covers
+  # `src/marketplace_kit/` (Python CLI), the kit's composite `action.yml`,
+  # and all workflow YAML in `.github/workflows/`. The value is parsed by
+  # the reusable with `fromJSON` to drive a matrix, so entries MUST be
+  # double-quoted JSON strings \u2014 YAML flow-list shorthand
+  # `[python, actions]` is rejected with
+  # `fromJSON: Unexpected symbol: 'python'`.
+  # ---------------------------------------------------------------------------
+  scan:
+    needs: preflight
+    uses: blackoutsecure/bos-automation-hub/.github/workflows/repo-security-scan.yml@main
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    with:
+      enable_kit_composite: true
+      enable_posture:       true
+      enable_scanners:      true
+      enable_upload:        true
+      fail_on:              ${{ inputs.fail_on || 'never' }}
+      use_advanced_pat:     ${{ needs.preflight.outputs.use_advanced_pat == 'true' }}
+      codeql_languages:     '["python", "actions"]'
+      codeql_queries:       security-and-quality
+    secrets: inherit

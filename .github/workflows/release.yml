@@ -93,9 +93,32 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # ---------------------------------------------------------------------------
+  # Preflight — validate `vars.DEFAULT_RUNNER` once before any downstream job
+  # evaluates its `runs-on:` expression. Fails fast with a clear annotation
+  # when the variable is missing or malformed, instead of leaving jobs
+  # queued indefinitely against an unmatched label. Runs on `ubuntu-latest`
+  # because the validator must run on a runner that is always present.
+  # See `blackoutsecure/bos-automation-hub` README ("Runner resolution")
+  # for the org-wide convention this mirrors.
+  # ---------------------------------------------------------------------------
+  preflight-runner-config:
+    name: Preflight (runner config)
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - uses: blackoutsecure/bos-automation-hub/.github/actions/shared/preflight-runner-config@main
+        with:
+          default_runner: ${{ vars.DEFAULT_RUNNER }}
+
   preflight:
     name: Preflight · dev CI must be green
-    runs-on: ubuntu-latest
+    needs: preflight-runner-config
+    # Resolves `vars.DEFAULT_RUNNER` (bare label or JSON-array string).
+    # Both presence and shape are enforced by `preflight-runner-config`,
+    # so this expression has no fallback — see the hub's README
+    # ("Runner resolution") for the full rationale.
+    runs-on: ${{ fromJSON(startsWith(vars.DEFAULT_RUNNER, '[') && vars.DEFAULT_RUNNER || format('"{0}"', vars.DEFAULT_RUNNER)) }}
     timeout-minutes: 3
     permissions:
       # `checks: read` for /commits/{sha}/check-runs.
@@ -219,8 +242,12 @@ jobs:
 
   compute-tag:
     name: Compute release tag
-    needs: preflight
-    runs-on: ubuntu-latest
+    needs: [preflight-runner-config, preflight]
+    # Resolves `vars.DEFAULT_RUNNER` (bare label or JSON-array string).
+    # Both presence and shape are enforced by `preflight-runner-config`,
+    # so this expression has no fallback — see the hub's README
+    # ("Runner resolution") for the full rationale.
+    runs-on: ${{ fromJSON(startsWith(vars.DEFAULT_RUNNER, '[') && vars.DEFAULT_RUNNER || format('"{0}"', vars.DEFAULT_RUNNER)) }}
     timeout-minutes: 2
     permissions:
       contents: read
@@ -306,8 +333,12 @@ jobs:
 
   promote:
     name: Promote dev -> main
-    needs: [preflight, compute-tag]
-    runs-on: ubuntu-latest
+    needs: [preflight-runner-config, preflight, compute-tag]
+    # Resolves `vars.DEFAULT_RUNNER` (bare label or JSON-array string).
+    # Both presence and shape are enforced by `preflight-runner-config`,
+    # so this expression has no fallback — see the hub's README
+    # ("Runner resolution") for the full rationale.
+    runs-on: ${{ fromJSON(startsWith(vars.DEFAULT_RUNNER, '[') && vars.DEFAULT_RUNNER || format('"{0}"', vars.DEFAULT_RUNNER)) }}
     timeout-minutes: 10
     permissions:
       # Required for the push of the promotion commit + tag.
@@ -421,9 +452,13 @@ jobs:
 
   release:
     name: GitHub Release
-    needs: promote
+    needs: [preflight-runner-config, promote]
     if: ${{ needs.promote.outputs.promoted == 'true' && !inputs.dry_run }}
-    runs-on: ubuntu-latest
+    # Resolves `vars.DEFAULT_RUNNER` (bare label or JSON-array string).
+    # Both presence and shape are enforced by `preflight-runner-config`,
+    # so this expression has no fallback — see the hub's README
+    # ("Runner resolution") for the full rationale.
+    runs-on: ${{ fromJSON(startsWith(vars.DEFAULT_RUNNER, '[') && vars.DEFAULT_RUNNER || format('"{0}"', vars.DEFAULT_RUNNER)) }}
     timeout-minutes: 5
     permissions:
       contents: write

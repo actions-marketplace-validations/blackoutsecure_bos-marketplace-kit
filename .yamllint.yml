@@ -43,5 +43,13 @@ rules:
     indent-sequences: consistent
     check-multi-line-strings: false
 
+  # Allow visually-aligned env: / with: blocks (e.g. column-aligned RHS
+  # values), which is a deliberate readability convention across the
+  # repo's workflows and composite actions. `max-spaces-before` is left
+  # at the default 0 so accidental whitespace-before-colon is still
+  # caught.
+  colons:
+    max-spaces-after: -1
+
   # Document-start markers (---) are noisy in workflow files.
   document-start: disable

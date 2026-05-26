@@ -37,9 +37,32 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # ---------------------------------------------------------------------------
+  # Preflight — validate `vars.DEFAULT_RUNNER` once before any downstream job
+  # evaluates its `runs-on:` expression. Fails fast with a clear annotation
+  # when the variable is missing or malformed, instead of leaving jobs
+  # queued indefinitely against an unmatched label. Runs on `ubuntu-latest`
+  # because the validator must run on a runner that is always present.
+  # See `blackoutsecure/bos-automation-hub` README ("Runner resolution")
+  # for the org-wide convention this mirrors.
+  # ---------------------------------------------------------------------------
+  preflight-runner-config:
+    name: Preflight (runner config)
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - uses: blackoutsecure/bos-automation-hub/.github/actions/shared/preflight-runner-config@main
+        with:
+          default_runner: ${{ vars.DEFAULT_RUNNER }}
+
   check:
     name: Run check against own action.yml
-    runs-on: ubuntu-latest
+    needs: preflight-runner-config
+    # Resolves `vars.DEFAULT_RUNNER` (bare label or JSON-array string).
+    # Both presence and shape are enforced by `preflight-runner-config`,
+    # so this expression has no fallback — see the hub's README
+    # ("Runner resolution") for the full rationale.
+    runs-on: ${{ fromJSON(startsWith(vars.DEFAULT_RUNNER, '[') && vars.DEFAULT_RUNNER || format('"{0}"', vars.DEFAULT_RUNNER)) }}
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -110,7 +133,12 @@ jobs:
 
   name-check:
     name: Verify Marketplace name availability
-    runs-on: ubuntu-latest
+    needs: preflight-runner-config
+    # Resolves `vars.DEFAULT_RUNNER` (bare label or JSON-array string).
+    # Both presence and shape are enforced by `preflight-runner-config`,
+    # so this expression has no fallback — see the hub's README
+    # ("Runner resolution") for the full rationale.
+    runs-on: ${{ fromJSON(startsWith(vars.DEFAULT_RUNNER, '[') && vars.DEFAULT_RUNNER || format('"{0}"', vars.DEFAULT_RUNNER)) }}
     timeout-minutes: 5
     # Run on PRs (default) and on manual dispatch when explicitly
     # requested. Skip on plain dev pushes — the external Marketplace
@@ -154,7 +182,12 @@ jobs:
 
   branding:
     name: Render branding preview
-    runs-on: ubuntu-latest
+    needs: preflight-runner-config
+    # Resolves `vars.DEFAULT_RUNNER` (bare label or JSON-array string).
+    # Both presence and shape are enforced by `preflight-runner-config`,
+    # so this expression has no fallback — see the hub's README
+    # ("Runner resolution") for the full rationale.
+    runs-on: ${{ fromJSON(startsWith(vars.DEFAULT_RUNNER, '[') && vars.DEFAULT_RUNNER || format('"{0}"', vars.DEFAULT_RUNNER)) }}
     timeout-minutes: 3
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -174,7 +207,12 @@ jobs:
 
   lint:
     name: Lint markdown / yaml / shell / actions
-    runs-on: ubuntu-latest
+    needs: preflight-runner-config
+    # Resolves `vars.DEFAULT_RUNNER` (bare label or JSON-array string).
+    # Both presence and shape are enforced by `preflight-runner-config`,
+    # so this expression has no fallback — see the hub's README
+    # ("Runner resolution") for the full rationale.
+    runs-on: ${{ fromJSON(startsWith(vars.DEFAULT_RUNNER, '[') && vars.DEFAULT_RUNNER || format('"{0}"', vars.DEFAULT_RUNNER)) }}
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -195,7 +233,12 @@ jobs:
 
   branch-protection:
     name: Verify branch protection on main
-    runs-on: ubuntu-latest
+    needs: preflight-runner-config
+    # Resolves `vars.DEFAULT_RUNNER` (bare label or JSON-array string).
+    # Both presence and shape are enforced by `preflight-runner-config`,
+    # so this expression has no fallback — see the hub's README
+    # ("Runner resolution") for the full rationale.
+    runs-on: ${{ fromJSON(startsWith(vars.DEFAULT_RUNNER, '[') && vars.DEFAULT_RUNNER || format('"{0}"', vars.DEFAULT_RUNNER)) }}
     timeout-minutes: 3
     # `check` mode is read-only; safe on every PR. NOTE: the GITHUB_TOKEN
     # CANNOT read /branches/{branch}/protection -- the API requires

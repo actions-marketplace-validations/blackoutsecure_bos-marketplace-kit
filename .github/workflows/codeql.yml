@@ -1,9 +1,9 @@
-# Thin caller for the shared CodeQL reusable in bos-automation-hub.
+# Thin caller for the consolidated security-scan reusable in bos-automation-hub.
 #
-# Replaces what used to be a ~95-line inline workflow with a 30-line
+# Replaces what used to be a ~95-line inline workflow with a ~30-line
 # subscribe-and-forward wrapper. All CodeQL invocation logic
 # (matrix, permissions, SHA pins, queries) lives in
-# `blackoutsecure/bos-automation-hub/.github/workflows/marketplace-codeql.yml`
+# `blackoutsecure/bos-automation-hub/.github/workflows/repo-security-scan.yml`
 # so a single change in the hub propagates to every kit on next run.
 #
 # This kit calls the reusable DIRECTLY (not via the Marketplace
@@ -13,6 +13,10 @@
 # PUBLISHED `@v0.1.x` composites against this repo's `dev` source,
 # defeating the in-tree testing model that `self-check.yml`
 # provides (local `./` composites against current dev code).
+#
+# Likewise, `enable_kit_composite: false` is set below to skip the
+# `bos-code-scanning-kit@v1` sub-job inside the wrapper — this kit
+# doesn't need that composite, only its CodeQL matrix sub-job.
 #
 # `name: CodeQL` is intentionally conventional (not the
 # `Word · …` pattern used elsewhere): GitHub's Security tab
@@ -37,14 +41,19 @@ concurrency:
 
 jobs:
   analyze:
-    uses: blackoutsecure/bos-automation-hub/.github/workflows/marketplace-codeql.yml@main
+    uses: blackoutsecure/bos-automation-hub/.github/workflows/repo-security-scan.yml@main
     permissions:
       security-events: write
       contents: read
       actions: read
     with:
+      # Skip the `bos-code-scanning-kit@v1` sub-job — this kit doesn't
+      # need it (its `lint` composite already covers actionlint /
+      # shellcheck via `lint.yml`, and posture audit is a future
+      # consideration not in scope today).
+      enable_kit_composite: false
       # Default `[python, actions]` covers `src/marketplace_kit/`
       # (Python CLI), the kit's composite `action.yml`, and all
       # workflow YAML in `.github/workflows/`.
-      languages: '[python, actions]'
-      queries:   security-and-quality
+      codeql_languages: '[python, actions]'
+      codeql_queries:   security-and-quality

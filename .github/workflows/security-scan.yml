@@ -27,7 +27,7 @@
 #   uses: github/codeql-action/analyze@7211b7c8077ea37d8641b6271f6a365a22a5fbfa # v4.36.0
 #
 # Bump the SHAs above in lockstep with
-# `bos-automation-hub/.github/workflows/repo-security-scan.yml`.
+# `bos-automation-hub/.github/workflows/bos-launchpad-code-scan.yml`.
 
 name: Security scan
 
@@ -141,7 +141,7 @@ jobs:
   # ---------------------------------------------------------------------------
   scan:
     needs: preflight
-    uses: blackoutsecure/bos-automation-hub/.github/workflows/repo-security-scan.yml@main
+    uses: blackoutsecure/bos-automation-hub/.github/workflows/bos-launchpad-code-scan.yml@main
     permissions:
       contents: read
       security-events: write

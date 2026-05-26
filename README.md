@@ -100,8 +100,16 @@ marketplace-kit doc-inputs
 marketplace-kit generate-policy security --owner my-org
 marketplace-kit generate-policy list   # show all available kinds
 
+# Scaffold an MP-compliant action.yml when starting a fresh repo
+# (passes every kit check out of the box, including MP010's
+# 125-char description limit)
+marketplace-kit generate-policy action-yml --owner my-org --project-name my-cool-action
+
 # Install every recommended community-health, supply-chain, and lint
-# file at its canonical path (refuses to overwrite without --force)
+# file at its canonical path (refuses to overwrite without --force).
+# Note: `action.yml` is intentionally NOT scaffolded by --all to avoid
+# overwriting a real Marketplace manifest. Scaffold it explicitly with
+# `generate-policy action-yml` (above) on a fresh repo.
 marketplace-kit install --all --owner my-org
 ```
 
@@ -743,7 +751,7 @@ listing card and across search results.
 ### MP003 — `description` is non-empty
 
 `description:` is the one-line subtitle on the Marketplace card. See
-also: [OP001](#op001--description-length).
+also: [MP010](#mp010--description-is-too-long).
 
 ### MP004 — `runs.using` is present
 
@@ -789,11 +797,16 @@ A description shorter than 10 characters is unlikely to be useful on
 the Marketplace card and may be rejected. Expand to a complete
 sentence (~30-125 chars).
 
-### OP001 — Description length
+### MP010 — Description is too long
 
-Marketplace truncates description >125 characters in card view.
-Tighten the description to a single short sentence; use `README.md`
-for elaboration.
+`description:` must be **125 characters or fewer**. Marketplace
+truncates anything past the limit in the card view, so a longer
+description ships a truncated subtitle to consumers — a hard fail by
+default. Tighten to a single short sentence; use `README.md` for
+elaboration.
+
+Enforced by both the `check` composite action and the
+`bos-marketplace-kit` CLI; cannot be downgraded to a warning.
 
 ### OP003 — `author` is set
 

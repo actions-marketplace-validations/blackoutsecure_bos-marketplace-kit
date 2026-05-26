@@ -114,3 +114,57 @@ def test_generate_policy_default_repo_is_cwd_basename(tmp_path: Path, monkeypatc
     rc, out, _ = _run(["generate-policy", "security", "--owner", "acme", "--stdout"])
     assert rc == 0
     assert "my-cool-action" in out
+
+
+def test_action_yml_template_self_validates(tmp_path: Path) -> None:
+    """The scaffolded `action.yml` MUST pass every kit check cleanly.
+
+    Otherwise scaffolding a fresh manifest would fail the kit's own
+    pre-publish gate — including MP010 (description <= 125 chars).
+    """
+    import yaml
+
+    from marketplace_kit.cli import _run_checks
+
+    out_path = tmp_path / "action.yml"
+    rc, _, err = _run(
+        [
+            "generate-policy", "action-yml",
+            "--owner", "acme",
+            "--repo", "widget",
+            "--project-name", "Widget",
+            "--output", str(out_path),
+        ]
+    )
+    assert rc == 0, err
+    assert out_path.exists()
+
+    manifest = yaml.safe_load(out_path.read_text(encoding="utf-8"))
+    assert isinstance(manifest, dict)
+
+    # The rendered template must pass every check.
+    results = _run_checks(manifest)
+    fails = [r for r in results if r.status == "fail"]
+    assert not fails, (
+        "scaffolded action.yml failed kit checks:\n"
+        + "\n".join(f"  {r.rule_id}: {r.message}" for r in fails)
+    )
+
+    # Sanity: MP010 specifically must report a pass (not skip), i.e.
+    # the template includes a non-empty description under the limit.
+    mp010 = [r for r in results if r.rule_id == "MP010"]
+    assert mp010, "MP010 did not fire on the scaffolded template"
+    assert mp010[0].status == "pass", (
+        f"MP010 expected pass, got {mp010[0].status}: {mp010[0].message}"
+    )
+
+
+def test_action_yml_not_in_install_all(tmp_path: Path) -> None:
+    """`install --all` must NOT scaffold action.yml.
+
+    Overwriting a real Marketplace manifest with a template would be
+    destructive; the kind is opt-in only.
+    """
+    from marketplace_kit.cli import INSTALL_ALL_KINDS
+
+    assert "action-yml" not in INSTALL_ALL_KINDS

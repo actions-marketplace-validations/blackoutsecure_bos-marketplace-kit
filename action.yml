@@ -2,7 +2,7 @@ name: Blackout Secure Marketplace Kit
 description: >-
   Pre-publish validator for GitHub Marketplace Actions. Lints metadata,
   branding, naming, and security defaults.
-author: BlackoutSecure
+author: Blackout Secure
 
 branding:
   icon: check-circle

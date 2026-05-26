@@ -34,7 +34,8 @@ ALLOWED_COLORS: frozenset[str] = frozenset({
 REQUIRED_KEYS: tuple[str, ...] = ("name", "description", "runs")
 
 # Marketplace truncates descriptions >125 chars in the card view.
-DESC_SOFT_MAX = 125
+# Treated as a hard upper bound (MP010 — fail) per kit policy.
+DESC_MAX = 125
 
 # Status labels used in console output and the doctor summary.
 STATUSES = ("pass", "fail", "warn", "skip")
@@ -120,13 +121,18 @@ def _run_checks(manifest: dict) -> list[CheckResult]:
     add("MP003", "pass" if desc else "fail",
         f"description ({len(desc)} chars)" if desc else "`description` is empty")
 
-    # OP001 — description length hint.
+    # MP010 — description hard upper bound. Marketplace card-view
+    # truncates anything past 125 chars; treat as fail so the
+    # listing never ships with a truncated subtitle.
     if desc:
-        if len(desc) > DESC_SOFT_MAX:
-            add("OP001", "warn",
-                f"description >{DESC_SOFT_MAX} chars — Marketplace truncates in card view")
+        if len(desc) > DESC_MAX:
+            add("MP010", "fail",
+                f"description is {len(desc)} chars (>{DESC_MAX}) — "
+                f"Marketplace card view will truncate. Tighten to a "
+                f"single short sentence; use README.md for detail.")
         else:
-            add("OP001", "pass", f"description length {len(desc)} <= {DESC_SOFT_MAX}")
+            add("MP010", "pass",
+                f"description length {len(desc)} <= {DESC_MAX}")
 
     # MP004 — runs.using present.
     runs = _as_dict(manifest.get("runs"))
@@ -437,6 +443,7 @@ class _PolicyKind(NamedTuple):
 
 # Map of `--kind` argument → policy template spec.
 POLICY_KINDS: dict[str, _PolicyKind] = {
+    "action-yml":       _PolicyKind("action.yml",               "action.yml",                                "Marketplace Action manifest"),
     "security":         _PolicyKind("security.md",              "SECURITY.md",                              "Security policy"),
     "code-of-conduct":  _PolicyKind("code-of-conduct.md",       "CODE_OF_CONDUCT.md",                       "Code of Conduct"),
     "contributing":     _PolicyKind("contributing.md",          "CONTRIBUTING.md",                          "Contributing guide"),
@@ -554,6 +561,11 @@ def cmd_generate_policy(args: argparse.Namespace) -> int:
 #     CodeQL + GHAS default-setup; treat as opt-in.
 #   * `shellcheckrc` — only useful when a repo actually ships shell
 #     scripts; skip by default.
+#   * `action-yml` — every Marketplace repo already has one; bulk-
+#     installing would overwrite the real manifest. Scaffold
+#     explicitly via `marketplace-kit generate-policy action-yml`
+#     (or `marketplace-kit install action-yml`) when starting a
+#     fresh repo.
 INSTALL_ALL_KINDS: tuple[str, ...] = (
     "security",
     "code-of-conduct",

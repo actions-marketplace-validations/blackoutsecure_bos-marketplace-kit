@@ -1,0 +1,60 @@
+# {{project_name}} — GitHub Marketplace Action manifest.
+#
+# Scaffolded by `marketplace-kit generate-policy action-yml`.
+# Passes every MP### / OP### / SC### rule the kit enforces today
+# (including MP010 — description must be <= 125 chars).
+#
+# Replace every TODO marker before publishing. After editing, run:
+#   marketplace-kit check
+# to re-validate.
+
+name: {{project_name}}
+
+# MP003 + MP010: keep this to one short sentence (<= 125 chars).
+# Use README.md for elaboration; Marketplace truncates anything longer
+# in the card view.
+description: >-
+  TODO: one-sentence summary of what this Action does.
+
+# OP003: recommended for Marketplace listings.
+author: {{owner}}
+
+# MP005 / MP006: branding.icon must be a Feather v4.28.0 icon and
+# branding.color must be one of:
+#   white, yellow, blue, green, orange, red, purple, gray-dark
+# See https://feathericons.com for the icon catalogue. Run
+# `marketplace-kit doctor` after editing to confirm the choice is
+# accepted by actionlint.
+branding:
+  icon: check-circle
+  color: blue
+
+# Document every input. The check action verifies each entry has a
+# non-empty description.
+inputs:
+  example_input:
+    description: 'TODO: describe what this input controls.'
+    required: false
+    default: ''
+
+# Document every output the same way.
+outputs:
+  example_output:
+    description: 'TODO: describe what this output exposes.'
+    value: ${{ steps.run.outputs.example }}
+
+# MP004: runs.using must be composite, node20, node22, or docker.
+# Composite is the most common choice for shell-driven Actions.
+runs:
+  using: composite
+  steps:
+    - id: run
+      shell: bash
+      env:
+        EXAMPLE_INPUT: ${{ inputs.example_input }}
+      # OP001 (composite hardening): keep `set -euo pipefail` at the
+      # top of every composite `run:` block.
+      run: |
+        set -euo pipefail
+        echo "TODO: replace with the action body."
+        echo "example=hello" >> "${GITHUB_OUTPUT}"

@@ -1,23 +1,23 @@
-# CodeQL analysis for bos-marketplace-kit.
+# Thin caller for the shared CodeQL reusable in bos-automation-hub.
 #
-# Scans the Python CLI and shipped composite actions for vulnerability
-# patterns. CodeQL is free for public repositories under GitHub
-# Advanced Security; findings appear in the Security tab.
+# Replaces what used to be a ~95-line inline workflow with a 30-line
+# subscribe-and-forward wrapper. All CodeQL invocation logic
+# (matrix, permissions, SHA pins, queries) lives in
+# `blackoutsecure/bos-automation-hub/.github/workflows/marketplace-codeql.yml`
+# so a single change in the hub propagates to every kit on next run.
 #
-# This workflow lives on `dev` only — Marketplace publishing rules
-# prohibit workflows on `main`. CodeQL still gets a complete view of
-# the source because it runs on every PR + every push to `dev`.
+# This kit calls the reusable DIRECTLY (not via the Marketplace
+# Launchpad) because it is the producer of the launchpad's `check`
+# / `lint` / `guard` / `promote` / `branding-preview` / `name-check`
+# composite actions. Calling the full launchpad would invoke the
+# PUBLISHED `@v0.1.x` composites against this repo's `dev` source,
+# defeating the in-tree testing model that `self-check.yml`
+# provides (local `./` composites against current dev code).
 #
-# `schedule:` is intentionally absent. GitHub fires scheduled
-# workflows only from files present on the default branch, and the
-# Marketplace publishing rule keeps `.github/workflows/**` off `main`.
-# Weekly drift coverage comes from Dependabot (which runs Monday
-# 06:00 UTC and bumps action SHAs that re-trigger this workflow on
-# the resulting PRs).
-#
-# `name: CodeQL` is intentionally conventional (not the `Word · …`
-# pattern used elsewhere): GitHub's Security tab surfaces this value
-# as the SARIF tool name, and external dashboards key off it.
+# `name: CodeQL` is intentionally conventional (not the
+# `Word · …` pattern used elsewhere): GitHub's Security tab
+# surfaces this value as the SARIF tool name, and external
+# dashboards key off it.
 
 name: CodeQL
 
@@ -32,59 +32,19 @@ permissions:
   contents: read
 
 concurrency:
-  # Use github.workflow so concurrent matrix jobs within one run don't
-  # cancel each other; only NEW runs against the same ref cancel
-  # in-flight ones.
   group: codeql-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   analyze:
-    name: Analyze (${{ matrix.language }})
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-
+    uses: blackoutsecure/bos-automation-hub/.github/workflows/marketplace-codeql.yml@main
     permissions:
-      # Required by github/codeql-action to upload SARIF to the
-      # Security tab.
       security-events: write
-      # Required by actions/checkout.
       contents: read
-      # Documented "starter" permission in GitHub's CodeQL template.
-      # Not strictly required for public repos, but included for
-      # parity with the kit's `generate-policy codeql-workflow`
-      # template that consumers receive.
       actions: read
-
-    strategy:
-      fail-fast: false
-      matrix:
-        # Only languages with source in this repo are listed.
-        # JavaScript is intentionally excluded — composite actions
-        # here have no JS entrypoint. `actions` scans the workflow
-        # YAML files themselves for misuse patterns.
-        language: [python, actions]
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-
-      - name: Initialize CodeQL
-        uses: github/codeql-action/init@7211b7c8077ea37d8641b6271f6a365a22a5fbfa # v4.36.0
-        with:
-          languages: ${{ matrix.language }}
-          # security-and-quality covers both vulnerability and code-quality
-          # patterns. Use 'security-extended' for higher recall if noise
-          # becomes acceptable.
-          queries: security-and-quality
-
-      # No `Autobuild` step: `python` is interpreted (CodeQL needs no
-      # build) and `actions` is YAML (there is no build step). Adding
-      # Autobuild here would be a no-op at best and an error at worst.
-
-      - name: Perform CodeQL analysis
-        uses: github/codeql-action/analyze@7211b7c8077ea37d8641b6271f6a365a22a5fbfa # v4.36.0
-        with:
-          category: "/language:${{ matrix.language }}"
+    with:
+      # Default `[python, actions]` covers `src/marketplace_kit/`
+      # (Python CLI), the kit's composite `action.yml`, and all
+      # workflow YAML in `.github/workflows/`.
+      languages: '[python, actions]'
+      queries:   security-and-quality

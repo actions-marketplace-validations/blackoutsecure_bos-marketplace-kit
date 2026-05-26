@@ -654,6 +654,17 @@ runs:
             record MP003 pass "description is ${DESC_LEN} chars"
           fi
 
+          # ----- MP010: description hard upper bound (<= 125 chars) ---------
+          # Marketplace truncates the card-view subtitle past 125
+          # chars. Treat the limit as a hard fail so a listing never
+          # ships with a truncated description; tighten the manifest
+          # and put detail in README.md instead.
+          if [ "${DESC_LEN:-0}" -gt 125 ]; then
+            record MP010 fail "description is ${DESC_LEN} chars (>125) — Marketplace card view will truncate. Tighten to a single short sentence; use README.md for detail."
+          elif [ "${DESC_LEN:-0}" -gt 0 ]; then
+            record MP010 pass "description is ${DESC_LEN} chars (<=125)"
+          fi
+
           # ----- MP004: runs block present + supported using ----------------
           case "${RUNS_USING:-}" in
             composite|node20|node22|docker)
@@ -688,8 +699,8 @@ runs:
             record MP006 warn "branding.color not set — Marketplace listings without a colour look bare"
           fi
         else
-          # No YAML at the expected path — skip MP002-006.
-          for id in MP002 MP003 MP004 MP005 MP006; do
+          # No YAML at the expected path — skip MP002-006 + MP010.
+          for id in MP002 MP003 MP004 MP005 MP006 MP010; do
             record "${id}" skip "no action manifest found at '${ACTION_YML_PATH}'"
           done
         fi

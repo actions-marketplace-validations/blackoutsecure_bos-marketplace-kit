@@ -60,23 +60,30 @@ def test_check_fails_on_invalid_branding_color(tmp_path: Path) -> None:
     assert "MP006" in buf.getvalue()
 
 
-def test_check_warns_on_long_description(tmp_path: Path) -> None:
+def test_check_fails_on_long_description(tmp_path: Path) -> None:
     long_desc = "X" * 200
     p = write(tmp_path, VALID_MANIFEST.replace("A test action.", long_desc))
     buf = io.StringIO()
     with redirect_stdout(buf):
         rc = main(["check", "--action-yml", str(p)])
-    assert rc == 0  # warn does not fail by default
-    assert "OP001" in buf.getvalue()
+    assert rc == 1  # MP010 is fatal
+    out = buf.getvalue()
+    assert "MP010" in out
+    assert "FAIL" in out
 
 
 def test_check_fail_on_warning_promotes(tmp_path: Path) -> None:
-    long_desc = "X" * 200
-    p = write(tmp_path, VALID_MANIFEST.replace("A test action.", long_desc))
+    # Drop `author:` to trigger OP003 (warn). With --fail-on-warning,
+    # the otherwise-clean manifest should exit non-zero.
+    manifest = "\n".join(
+        line for line in VALID_MANIFEST.splitlines() if not line.startswith("author:")
+    ) + "\n"
+    p = write(tmp_path, manifest)
     buf = io.StringIO()
     with redirect_stdout(buf):
         rc = main(["check", "--action-yml", str(p), "--fail-on-warning"])
     assert rc == 1
+    assert "OP003" in buf.getvalue()
 
 
 def test_check_missing_file(tmp_path: Path) -> None:

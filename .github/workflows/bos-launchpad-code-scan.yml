@@ -1,3 +1,10 @@
+# Blackout Secure code-scan launchpad caller for this kit.
+#
+# Thin event-trigger wrapper around the hub-side reusable
+# `bos-launchpad-code-scan.yml` in blackoutsecure/bos-automation-hub.
+# Filename mirrors the hub reusable's name so the consumer surface in
+# every kit is uniform (`bos-launchpad-<domain>.yml`).
+#
 # Consolidated security scan: kit composite (posture + actionlint + gitleaks +
 # shellcheck) AND CodeQL matrix, both calling the hub-side reusable so a
 # single change in `bos-automation-hub` propagates here on next run.
@@ -9,14 +16,15 @@
 # `use_advanced_pat` input, so both stages can run from one caller without
 # losing the PS002/PS003 posture probes that need elevated API scope.
 #
-# Why this kit calls the reusable DIRECTLY rather than via the Marketplace
-# Launchpad: this kit is the PRODUCER of the launchpad's `check` / `lint` /
-# `guard` / `promote` / `branding-preview` / `name-check` composite actions.
-# Calling the full launchpad would invoke the PUBLISHED `@v0.1.x` composites
-# against this repo's `dev` source, defeating the in-tree testing model that
-# `self-check.yml` / `self-guard.yml` provide (local `./` composites against
-# current dev code). The security scan reusable has no such producer/consumer
-# tension and is safe to consume directly.
+# Why this kit calls the code-scan reusable DIRECTLY rather than via the
+# Marketplace Launchpad's `enable_security_scan: true` knob: this kit is the
+# PRODUCER of the marketplace launchpad's `check` / `lint` / `guard` /
+# `promote` / `branding-preview` / `name-check` composite actions. Calling
+# the full marketplace launchpad would invoke the PUBLISHED `@v0.1.x`
+# composites against this repo's `dev` source, defeating the in-tree
+# testing model that `self-check.yml` / `self-guard.yml` provide (local
+# `./` composites against current dev code). The code-scan reusable has no
+# such producer/consumer tension and is safe to consume directly.
 #
 # Transitive invocations performed by the hub-side reusable (kept inline here
 # so audit tooling and the marketplace-kit CQ001 detector can see them at
@@ -29,6 +37,10 @@
 # Bump the SHAs above in lockstep with
 # `bos-automation-hub/.github/workflows/bos-launchpad-code-scan.yml`.
 
+# `name:` is intentionally NOT renamed alongside the file. GitHub surfaces
+# it as the Actions-tab label, the SARIF tool name in the Security tab, and
+# the check-run name that branch protection keys off. Renaming would orphan
+# any protection rule requiring "Security scan" to be green.
 name: Security scan
 
 "on":
@@ -59,7 +71,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: security-scan-${{ github.workflow }}-${{ github.ref }}
+  group: bos-launchpad-code-scan-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:

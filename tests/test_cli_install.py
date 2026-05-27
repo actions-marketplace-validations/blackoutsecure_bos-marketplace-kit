@@ -232,3 +232,80 @@ def test_install_each_recommended_kind_writes_clean_template(
         assert placeholder not in text, (
             f"placeholder {placeholder} not substituted for kind {kind!r}"
         )
+
+
+# --- mutual-exclusion (codeql-workflow vs code-scan-workflow) -------------
+
+
+def test_install_code_scan_warns_when_codeql_present(tmp_path: Path) -> None:
+    """`install code-scan-workflow` warns when codeql.yml already exists."""
+    codeql_path = tmp_path / POLICY_KINDS["codeql-workflow"].default_out
+    codeql_path.parent.mkdir(parents=True, exist_ok=True)
+    codeql_path.write_text("name: codeql\n", encoding="utf-8")
+
+    rc, _, err = _run([
+        "install", "code-scan-workflow",
+        "--owner", "acme",
+        "--cwd", str(tmp_path),
+    ])
+    assert rc == 0, err
+    # New file landed at its canonical path.
+    assert (tmp_path / POLICY_KINDS["code-scan-workflow"].default_out).exists()
+    # Standalone codeql.yml is untouched.
+    assert codeql_path.read_text(encoding="utf-8") == "name: codeql\n"
+    # Warning surfaced naming both sides of the conflict.
+    assert "warning" in err.lower()
+    assert "codeql-workflow" in err
+    assert "code-scan-workflow" in err
+
+
+def test_install_codeql_warns_when_code_scan_present(tmp_path: Path) -> None:
+    """Symmetric: `install codeql-workflow` warns when bos-launchpad-code-scan.yml exists."""
+    scan_path = tmp_path / POLICY_KINDS["code-scan-workflow"].default_out
+    scan_path.parent.mkdir(parents=True, exist_ok=True)
+    scan_path.write_text("name: security-scan\n", encoding="utf-8")
+
+    rc, _, err = _run([
+        "install", "codeql-workflow",
+        "--owner", "acme",
+        "--cwd", str(tmp_path),
+    ])
+    assert rc == 0, err
+    assert "warning" in err.lower()
+    assert "code-scan-workflow" in err
+
+
+def test_install_no_warning_when_sibling_absent(tmp_path: Path) -> None:
+    """No warning fires for the clean install case."""
+    rc, _, err = _run([
+        "install", "code-scan-workflow",
+        "--owner", "acme",
+        "--cwd", str(tmp_path),
+    ])
+    assert rc == 0, err
+    assert "warning" not in err.lower()
+
+
+def test_install_no_warning_on_skip(tmp_path: Path) -> None:
+    """When the target already exists (skip), no overlap warning fires.
+
+    The user has already seen the conflict at the original install
+    time; surfacing it again on every re-run would be noisy.
+    """
+    # Both files pre-exist \u2014 we'd otherwise warn loudly.
+    codeql_path = tmp_path / POLICY_KINDS["codeql-workflow"].default_out
+    codeql_path.parent.mkdir(parents=True, exist_ok=True)
+    codeql_path.write_text("name: codeql\n", encoding="utf-8")
+
+    scan_path = tmp_path / POLICY_KINDS["code-scan-workflow"].default_out
+    scan_path.write_text("name: security-scan\n", encoding="utf-8")
+
+    rc, _, err = _run([
+        "install", "code-scan-workflow",
+        "--owner", "acme",
+        "--cwd", str(tmp_path),
+    ])
+    assert rc == 0, err
+    # Skipped (target exists, no --force), so no warning either.
+    assert "[skip" in err
+    assert "warning" not in err.lower()

@@ -1091,7 +1091,7 @@ generate-policy <kind>`).
 | ID    | File(s)                                                                    | Default policy | Generator kind             |
 |-------|----------------------------------------------------------------------------|----------------|----------------------------|
 | DP001 | `.github/dependabot.yml` / `.dependabot.yaml`                              | `warn`         | `dependabot`               |
-| CQ001 | any workflow referencing `github/codeql-action`                            | `warn`         | `codeql-workflow`          |
+| CQ001 | any workflow referencing `github/codeql-action`                            | `warn`         | `codeql-workflow` *or* `code-scan-workflow` (mutually exclusive — pick one) |
 | LT001 | `.editorconfig`                                                            | `warn`         | (no template; trivial)     |
 | LT002 | `.gitattributes`                                                           | `warn`         | (no template; repo-shaped) |
 | LT003 | `.gitignore`                                                               | `warn`         | (no template; repo-shaped) |
@@ -1101,6 +1101,38 @@ generate-policy <kind>`).
 The lint rules default to `skip` (LT004/LT005) or `warn` (LT001-003)
 so legacy repos can adopt the kit without immediate cleanup. Promote
 to `fail` as your repo catches up.
+
+#### CQ001 — choose ONE of `codeql-workflow` or `code-scan-workflow`
+
+Two templates satisfy CQ001; pick exactly one. Running both doubles
+CodeQL spend on every dev push (same `github/codeql-action`, same
+SARIF, twice the minutes) and splits the SHA-bump source of truth
+across two files.
+
+| | `codeql-workflow` | `code-scan-workflow` |
+|---|---|---|
+| **What ships** | Standalone `.github/workflows/codeql.yml` with `github/codeql-action` SHAs pinned inline | `.github/workflows/bos-launchpad-code-scan.yml` that calls the hub reusable `blackoutsecure/bos-automation-hub/.github/workflows/bos-launchpad-code-scan.yml@main` |
+| **SHA rollouts** | You bump SHAs in this repo on every CodeQL release | One hub commit propagates to every consumer on next run |
+| **Covers** | CodeQL only | CodeQL **and** the `bos-code-scanning-kit@v1` composite (posture audit + actionlint / gitleaks / shellcheck) |
+| **Cross-org / external use** | Self-contained — no hub dependency | Requires read access to `blackoutsecure/bos-automation-hub` |
+| **Producer-kit escape hatch** | n/a | Set `enable_kit_composite: false` if this repo IS the producer of `bos-code-scanning-kit@v1` |
+| **Advanced posture probes (PS002/PS003)** | n/a | Built-in preflight + `SCANNING_PAT` plumbing |
+
+The `marketplace-kit install` command emits a warning if you try to
+scaffold one template next to an existing canonical file for the
+other. The recommended migration path:
+
+```bash
+# Migrate from standalone CodeQL to the hub-reusable form:
+marketplace-kit install code-scan-workflow --owner my-org
+rm .github/workflows/codeql.yml                       # commit in same PR
+```
+
+Both templates produce a top-level workflow file referencing
+`github/codeql-action` (the latter as a `# uses:` documentary
+comment in the header), which is what CQ001 actually keys off — it
+inspects workflow files at the repo's surface, not transitive
+reusable callees.
 
 ### GH001-GH003 — GitHub Advanced Security toggles (live repo settings)
 

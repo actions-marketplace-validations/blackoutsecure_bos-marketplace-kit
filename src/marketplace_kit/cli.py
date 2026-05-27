@@ -454,12 +454,58 @@ POLICY_KINDS: dict[str, _PolicyKind] = {
     "funding":          _PolicyKind("funding.yml",              ".github/FUNDING.yml",                       "Funding manifest"),
     "dependabot":               _PolicyKind("dependabot.yml",               ".github/dependabot.yml",                "Dependabot config"),
     "codeql-workflow":          _PolicyKind("codeql-workflow.yml",          ".github/workflows/codeql.yml",          "CodeQL workflow"),
+    "code-scan-workflow":       _PolicyKind("code-scan-workflow.yml",       ".github/workflows/bos-launchpad-code-scan.yml", "Hub-reusable security scan (kit + CodeQL)"),
     "scorecard-workflow":       _PolicyKind("scorecard-workflow.yml",       ".github/workflows/scorecard.yml",       "OpenSSF Scorecard workflow"),
     "security-devops-workflow": _PolicyKind("security-devops-workflow.yml", ".github/workflows/security-devops.yml", "MS Security DevOps workflow"),
     "markdownlint":             _PolicyKind("markdownlint.yaml",            ".markdownlint.yaml",                    "markdownlint config"),
     "yamllint":                 _PolicyKind("yamllint.yml",                 ".yamllint.yml",                         "yamllint config"),
     "shellcheckrc":             _PolicyKind("shellcheckrc",                 ".shellcheckrc",                         "shellcheck config"),
 }
+
+
+# Pairs of policy kinds that solve the same problem in mutually-exclusive
+# ways. Installing both produces duplicate CI runs OR conflicting source-
+# of-truth for SHA pins. Scaffolding either one emits a stderr warning
+# when the other's canonical file is already present, pointing the user
+# at the migration path.
+#
+# Current pairs:
+#   * codeql-workflow (standalone CodeQL, SHAs pinned in this repo) vs
+#     code-scan-workflow (calls the hub reusable, which pins CodeQL +
+#     bos-code-scanning-kit SHAs once for every consumer). Running both
+#     doubles CodeQL spend on every dev push.
+MUTUALLY_EXCLUSIVE_KINDS: dict[str, tuple[str, ...]] = {
+    "codeql-workflow":     ("code-scan-workflow",),
+    "code-scan-workflow":  ("codeql-workflow",),
+}
+
+
+def _warn_mutually_exclusive(
+    kind: str,
+    base: Path,
+    *,
+    stream=None,
+) -> None:
+    """Emit a stderr warning if ``kind`` collides with an already-present sibling.
+
+    Inspects each sibling kind's canonical path under ``base``. Pure
+    advisory — never fails the command. Skipped when ``kind`` has no
+    entry in :data:`MUTUALLY_EXCLUSIVE_KINDS`.
+
+    ``stream`` is resolved lazily from ``sys.stderr`` so contextlib
+    ``redirect_stderr`` (used in the test harness) takes effect.
+    """
+    if stream is None:
+        stream = sys.stderr
+    siblings = MUTUALLY_EXCLUSIVE_KINDS.get(kind, ())
+    for sibling in siblings:
+        sibling_path = base / POLICY_KINDS[sibling].default_out
+        if sibling_path.exists():
+            stream.write(
+                f"warning: {kind!r} overlaps with existing {sibling!r} at "
+                f"{sibling_path}. Running both will duplicate CI work; pick "
+                f"one and delete the other in the same PR.\n"
+            )
 
 
 def _load_template(template_file: str) -> str:
@@ -543,6 +589,13 @@ def cmd_generate_policy(args: argparse.Namespace) -> int:
             "--stdout to print, or --output to choose a different path.\n"
         )
         return 2
+
+    # Advisory warning when a mutually-exclusive sibling kind is already
+    # present at its canonical path (e.g. installing `code-scan-workflow`
+    # next to an existing `codeql.yml` would duplicate CodeQL runs).
+    # Checks CWD because that's where the canonical paths resolve, even
+    # when the user redirected this write with --output.
+    _warn_mutually_exclusive(kind, Path.cwd())
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(rendered, encoding="utf-8")
@@ -673,6 +726,11 @@ def cmd_install(args: argparse.Namespace) -> int:
             forced += 1
         elif status.endswith("skip"):
             skipped += 1
+        # Only worth warning when we actually (or would) write a fresh
+        # file. A `skip` means the file was already there \u2014 the user has
+        # already seen and accepted whatever overlap exists.
+        if status.endswith(("write", "force")):
+            _warn_mutually_exclusive(kind, base)
 
     prefix = "would " if args.dry_run else ""
     sys.stderr.write(

@@ -168,3 +168,115 @@ def test_action_yml_not_in_install_all(tmp_path: Path) -> None:
     from marketplace_kit.cli import INSTALL_ALL_KINDS
 
     assert "action-yml" not in INSTALL_ALL_KINDS
+
+
+def test_code_scan_workflow_not_in_install_all() -> None:
+    """`code-scan-workflow` MUST be opt-in.
+
+    `install --all` already scaffolds `codeql-workflow` (standalone
+    CodeQL). Adding `code-scan-workflow` to the bulk set would
+    silently install two overlapping CodeQL paths on every fresh
+    bootstrap. Treat it like `scorecard-workflow` / `security-devops-
+    workflow` \u2014 explicit opt-in by name.
+    """
+    from marketplace_kit.cli import INSTALL_ALL_KINDS
+
+    assert "code-scan-workflow" not in INSTALL_ALL_KINDS
+
+
+def test_code_scan_workflow_template_shape(tmp_path: Path) -> None:
+    """The rendered template must call the hub reusable and parse as YAML."""
+    import yaml
+
+    rc, out, err = _run(
+        [
+            "generate-policy", "code-scan-workflow",
+            "--owner", "acme",
+            "--repo", "widget",
+            "--project-name", "Widget",
+            "--stdout",
+        ]
+    )
+    assert rc == 0, err
+
+    # Hub reusable is the source of truth for SHA pins; the caller
+    # must invoke it by canonical path.
+    assert (
+        "blackoutsecure/bos-automation-hub/.github/workflows/"
+        "bos-launchpad-code-scan.yml" in out
+    ), "rendered template does not reference the hub reusable"
+
+    # Placeholder substitution still applied to the header comment.
+    assert "acme" in out
+    assert "Widget" in out
+    assert "{{owner}}" not in out
+    assert "{{project_name}}" not in out
+
+    # YAML parses; declares the expected job + permissions surface.
+    doc = yaml.safe_load(out)
+    assert isinstance(doc, dict)
+    assert "scan" in doc["jobs"]
+    assert "preflight" in doc["jobs"]
+    # The CodeQL-language input must be a JSON-array STRING (parsed by
+    # the reusable via fromJSON), not a YAML list \u2014 see template header.
+    cq_langs = doc["jobs"]["scan"]["with"]["codeql_languages"]
+    assert isinstance(cq_langs, str), (
+        f"codeql_languages must be a string, got {type(cq_langs).__name__}"
+    )
+
+
+def test_mutual_exclusion_warning_on_generate_policy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Scaffolding `code-scan-workflow` next to an existing codeql.yml warns."""
+    monkeypatch.chdir(tmp_path)
+
+    # Pre-create the standalone CodeQL workflow at its canonical path.
+    codeql_path = tmp_path / ".github" / "workflows" / "codeql.yml"
+    codeql_path.parent.mkdir(parents=True)
+    codeql_path.write_text("name: codeql\n", encoding="utf-8")
+
+    rc, _, err = _run([
+        "generate-policy", "code-scan-workflow",
+        "--owner", "acme",
+        "--output", str(tmp_path / "out.yml"),
+    ])
+    assert rc == 0, err
+    assert "warning" in err.lower()
+    assert "codeql-workflow" in err
+    assert "code-scan-workflow" in err
+
+
+def test_mutual_exclusion_warning_symmetric(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Scaffolding `codeql-workflow` next to an existing bos-launchpad-code-scan.yml warns."""
+    monkeypatch.chdir(tmp_path)
+
+    scan_path = tmp_path / ".github" / "workflows" / "bos-launchpad-code-scan.yml"
+    scan_path.parent.mkdir(parents=True)
+    scan_path.write_text("name: security-scan\n", encoding="utf-8")
+
+    rc, _, err = _run([
+        "generate-policy", "codeql-workflow",
+        "--owner", "acme",
+        "--output", str(tmp_path / "out.yml"),
+    ])
+    assert rc == 0, err
+    assert "warning" in err.lower()
+    assert "code-scan-workflow" in err
+
+
+def test_no_mutual_exclusion_warning_when_sibling_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No warning fires when neither sibling exists \u2014 clean install case."""
+    monkeypatch.chdir(tmp_path)
+
+    rc, _, err = _run([
+        "generate-policy", "code-scan-workflow",
+        "--owner", "acme",
+        "--output", str(tmp_path / "out.yml"),
+    ])
+    assert rc == 0, err
+    assert "warning" not in err.lower()

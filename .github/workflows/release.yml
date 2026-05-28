@@ -6,19 +6,30 @@
 # workflows on the default branch).
 #
 # Pipeline:
-#   1. preflight — confirms dev's HEAD passed every required CI
+#   1. dispatch-prechecks (default on) — dispatches the required dev
+#                  workflows (`tests.yml`, `self-check.yml`,
+#                  `bos-launchpad-code-scan.yml`) via
+#                  `workflow_dispatch` and waits for them, so
+#                  manual release dispatch just works without
+#                  pushing a no-op commit when dev HEAD hasn't been
+#                  CI'd. Per workflow: skips if the latest dev run
+#                  for the current HEAD already succeeded; just
+#                  waits (no re-dispatch) if one is queued or
+#                  in-progress; otherwise dispatches fresh. Disabled
+#                  by `run_prechecks=false` or `skip_preflight=true`.
+#   2. preflight — confirms dev's HEAD passed every required CI
 #                  check before we promote. Cheap (one API call);
 #                  prevents shipping from a red SHA.
-#   2. compute-tag — if `bump` was used (patch/minor/major, default
+#   3. compute-tag — if `bump` was used (patch/minor/major, default
 #                  `patch`), reads the latest `vX.Y.Z` tag and
 #                  computes the next one. Otherwise the operator-
 #                  supplied `tag_name` passes through unchanged.
 #                  Exactly one of {tag_name, bump != none} must be
 #                  provided.
-#   3. promote   — `./.github/actions/promote` allowlists files
+#   4. promote   — `./.github/actions/promote` allowlists files
 #                  from dev -> main, hard-blocks `.github/workflows/**`,
 #                  validates the SemVer tag, tags main with `vX.Y.Z`.
-#   4. release   — `gh release create` inline against the new tag.
+#   5. release   — `gh release create` inline against the new tag.
 #
 # Trigger: `workflow_dispatch` only (operator types the version OR
 # picks a `bump` mode). The promote action validates SemVer itself.
@@ -81,6 +92,22 @@ name: Release · promote dev → main + tag + publish
         required: false
         type: boolean
         default: false
+      run_prechecks:
+        description: >-
+          Before the preflight gate, dispatch the required dev
+          workflows (tests / self-check / security-scan) and wait
+          for them to complete on the current dev HEAD. Per
+          workflow, this skips if the latest run on the current SHA
+          already succeeded, just waits (no re-dispatch) if one is
+          queued or in-progress, and otherwise dispatches a fresh
+          run via `workflow_dispatch`. Defaults to `true` so manual
+          release dispatch can ship from a CI-cold dev HEAD without
+          first pushing a no-op commit. Set `false` when you have
+          already pushed and just want the cheap preflight API
+          check. Ignored when `skip_preflight=true`.
+        required: false
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -111,9 +138,211 @@ jobs:
         with:
           default_runner: ${{ vars.DEFAULT_RUNNER }}
 
+  # ---------------------------------------------------------------------------
+  # Dispatch the required dev workflows and wait for them, so the operator
+  # can fire release directly without first pushing a no-op commit to
+  # re-trigger CI. Skipped when `run_prechecks=false` (operator just wants
+  # the cheap preflight gate against whatever's already on dev) or when
+  # `skip_preflight=true` (no point spending compute to populate checks
+  # that the next job is going to ignore anyway).
+  #
+  # Per workflow the logic is:
+  #   * latest run for this SHA already success → skip dispatch
+  #   * latest run for this SHA queued/in-progress → wait on it
+  #     (re-dispatching would just be canceled by each workflow's own
+  #     `concurrency: cancel-in-progress`)
+  #   * anything else (failure, never-ran) → dispatch a fresh run via
+  #     `workflow_dispatch` and capture its run ID by polling
+  #     `gh run list --commit=${DEV_SHA}` filtered to dispatches that
+  #     started after our timestamp.
+  #
+  # Then `gh run watch --exit-status` blocks until each run completes,
+  # propagating failure here so `preflight` is skipped (via its `needs`
+  # gate) rather than running a doomed gate. Watches happen sequentially
+  # but the underlying runs are concurrent on the Actions pool, so the
+  # wall-clock cost is bounded by the longest workflow (typically the
+  # security scan / CodeQL matrix).
+  # ---------------------------------------------------------------------------
+  dispatch-prechecks:
+    name: Dispatch dev prechecks
+    needs: preflight-runner-config
+    if: >-
+      !cancelled()
+      && needs.preflight-runner-config.result == 'success'
+      && inputs.run_prechecks
+      && !inputs.skip_preflight
+    runs-on: ${{ fromJSON(startsWith(vars.DEFAULT_RUNNER, '[') && vars.DEFAULT_RUNNER || format('"{0}"', vars.DEFAULT_RUNNER)) }}
+    timeout-minutes: 30
+    permissions:
+      # `actions: write` lets `gh workflow run` create a
+      # `workflow_dispatch` event on the same repo via `GITHUB_TOKEN`.
+      # `actions: read` is implied; `gh run list` / `gh run watch`
+      # only need read scope.
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: dev
+          fetch-depth: 1
+          persist-credentials: false
+      - id: dispatch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO:     ${{ github.repository }}
+          # Workflow FILENAMES (not display names). `gh workflow run`
+          # resolves them by path under `.github/workflows/`. Names
+          # here are the producers of the bare check-run names the
+          # `preflight` gate enforces (see REQUIRED_CHECKS below).
+          # If you add a required check, ADD ITS WORKFLOW HERE too.
+          PRECHECK_WORKFLOWS: |
+            tests.yml
+            self-check.yml
+            bos-launchpad-code-scan.yml
+        run: |
+          set -euo pipefail
+
+          DEV_SHA="$(git rev-parse HEAD)"
+          echo "Dev HEAD: ${DEV_SHA}"
+
+          # Read workflow list into an array, stripping blanks.
+          workflows=()
+          while IFS= read -r wf; do
+            [ -z "${wf}" ] && continue
+            workflows+=("${wf}")
+          done <<< "${PRECHECK_WORKFLOWS}"
+
+          # Parallel arrays: i-th workflow -> i-th run id + state.
+          # state ∈ {skip, wait, dispatched}. "skip" means already
+          # green on this SHA; nothing to wait on.
+          run_ids=()
+          states=()
+
+          for wf in "${workflows[@]}"; do
+            echo "::group::Prepare ${wf}"
+
+            # Find the most recent dev run for THIS SHA (regardless
+            # of trigger event). --limit=1 + --commit narrows the
+            # query to exactly the runs that matter for preflight.
+            existing="$(gh run list \
+              --workflow="${wf}" \
+              --branch=dev \
+              --commit="${DEV_SHA}" \
+              --limit=1 \
+              --json databaseId,status,conclusion,url 2>/dev/null || echo '[]')"
+
+            count="$(jq 'length' <<< "${existing}")"
+            if [ "${count}" -gt 0 ]; then
+              status="$(jq -r '.[0].status' <<< "${existing}")"
+              conclusion="$(jq -r '.[0].conclusion // empty' <<< "${existing}")"
+              rid="$(jq -r '.[0].databaseId' <<< "${existing}")"
+              url="$(jq -r '.[0].url' <<< "${existing}")"
+
+              if [ "${conclusion}" = "success" ]; then
+                echo "  ✓ already success (run ${rid}) — skipping dispatch"
+                echo "    ${url}"
+                run_ids+=("")
+                states+=("skip")
+                echo "::endgroup::"
+                continue
+              fi
+              if [ "${status}" = "in_progress" ] || [ "${status}" = "queued" ] || [ "${status}" = "pending" ] || [ "${status}" = "waiting" ]; then
+                echo "  ↻ ${status} (run ${rid}) — waiting, will NOT re-dispatch"
+                echo "    ${url}"
+                run_ids+=("${rid}")
+                states+=("wait")
+                echo "::endgroup::"
+                continue
+              fi
+              echo "  ✗ previous run ${rid} concluded '${conclusion:-unknown}' (status=${status}) — dispatching fresh"
+            else
+              echo "  ⨯ no run found for ${DEV_SHA} — dispatching"
+            fi
+
+            # Record the timestamp BEFORE dispatch so the post-
+            # dispatch query can filter to the run we just created.
+            # GitHub creates the run a few seconds after the API
+            # call, so we poll for up to 180s.
+            before_iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            gh workflow run "${wf}" --ref dev
+
+            rid=""
+            for _ in $(seq 1 36); do
+              sleep 5
+              rid="$(gh run list \
+                --workflow="${wf}" \
+                --branch=dev \
+                --commit="${DEV_SHA}" \
+                --event=workflow_dispatch \
+                --created=">=${before_iso}" \
+                --limit=1 \
+                --json databaseId \
+                --jq '.[0].databaseId // empty' 2>/dev/null || echo '')"
+              if [ -n "${rid}" ]; then
+                echo "  → dispatched run ${rid}"
+                break
+              fi
+            done
+            if [ -z "${rid}" ]; then
+              echo "::error::Could not locate dispatched ${wf} run for ${DEV_SHA} after 180s. Check the Actions tab; the dispatch API may have failed silently, or another commit landed on dev (race)."
+              exit 1
+            fi
+            run_ids+=("${rid}")
+            states+=("dispatched")
+            echo "::endgroup::"
+          done
+
+          # Phase 2: block until every non-skipped run finishes.
+          # `gh run watch --exit-status` returns non-zero on a failed
+          # run; we tally failures and emit one consolidated error.
+          failed=0
+          summary_lines=()
+          for i in "${!workflows[@]}"; do
+            wf="${workflows[$i]}"
+            rid="${run_ids[$i]}"
+            state="${states[$i]}"
+            if [ "${state}" = "skip" ]; then
+              summary_lines+=("- \`${wf}\`: ✓ already green on \`${DEV_SHA}\`")
+              continue
+            fi
+            echo "::group::Watch ${wf} (${state}) run ${rid}"
+            if gh run watch "${rid}" --exit-status --interval 15; then
+              echo "  ✓ ${wf} completed successfully"
+              summary_lines+=("- \`${wf}\`: ✓ ${state} run [${rid}](https://github.com/${REPO}/actions/runs/${rid}) succeeded")
+            else
+              rc=$?
+              echo "::error::${wf} run ${rid} failed (gh run watch exit ${rc})"
+              summary_lines+=("- \`${wf}\`: ✗ ${state} run [${rid}](https://github.com/${REPO}/actions/runs/${rid}) FAILED")
+              failed=$((failed+1))
+            fi
+            echo "::endgroup::"
+          done
+
+          {
+            echo "## Dispatch prechecks"
+            echo ""
+            echo "Dev SHA: \`${DEV_SHA}\`"
+            echo ""
+            printf '%s\n' "${summary_lines[@]}"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+          if [ "${failed}" -gt 0 ]; then
+            echo "::error::${failed} precheck workflow(s) failed on ${DEV_SHA}. Preflight will be skipped; fix the failing run(s) on dev (or push a corrective commit) before re-dispatching release."
+            exit 1
+          fi
+
   preflight:
     name: Preflight · dev CI must be green
-    needs: preflight-runner-config
+    # `dispatch-prechecks` is included even though it can be skipped
+    # (when `run_prechecks=false` or `skip_preflight=true`). The `if:`
+    # below tolerates `result == 'skipped'` so preflight still runs
+    # against whatever check-runs already exist on dev HEAD.
+    needs: [preflight-runner-config, dispatch-prechecks]
+    if: >-
+      !cancelled()
+      && needs.preflight-runner-config.result == 'success'
+      && (needs.dispatch-prechecks.result == 'success'
+          || needs.dispatch-prechecks.result == 'skipped')
     # Resolves `vars.DEFAULT_RUNNER` (bare label or JSON-array string).
     # Both presence and shape are enforced by `preflight-runner-config`,
     # so this expression has no fallback — see the hub's README
@@ -141,10 +370,23 @@ jobs:
           # so a green dev SHA here always matches the protection
           # rule. If you add a required check, add it BOTH to dev's
           # branch protection AND to this list (and vice-versa).
+          #
+          # NOTE on `scan / Analyze (...)`: those two checks come from
+          # `bos-launchpad-code-scan.yml`, which invokes the hub-side
+          # reusable workflow via a caller job named `scan`. GitHub
+          # prefixes check-run names emitted by a reusable workflow
+          # with `<caller-job-name> / <called-job-name>`, so the CodeQL
+          # matrix job (`name: Analyze (${{ matrix.language }})` in the
+          # hub reusable) surfaces here — and in dev branch protection
+          # — as `scan / Analyze (python)` / `scan / Analyze (actions)`,
+          # NOT the bare `Analyze (...)` names from the pre-consolidation
+          # standalone `codeql.yml` workflow. If you rename the caller
+          # job in `bos-launchpad-code-scan.yml`, update these entries
+          # AND dev's branch protection in the same change.
           REQUIRED_CHECKS: |
             Python CLI (smoke + pytest)
-            Analyze (python)
-            Analyze (actions)
+            scan / Analyze (python)
+            scan / Analyze (actions)
             Lint markdown / yaml / shell / actions
             Run check against own action.yml
             Render branding preview

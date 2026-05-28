@@ -592,12 +592,320 @@ jobs:
       promoted:           ${{ steps.promote.outputs.promoted }}
       removed_paths:      ${{ steps.promote.outputs.removed_paths }}
       removed_violations: ${{ steps.promote.outputs.removed_violations }}
+      token_kind:         ${{ steps.resolve-token.outputs.token_kind }}
+      token_identity:     ${{ steps.resolve-token.outputs.token_identity }}
+      funding_status:     ${{ steps.resolve-funding.outputs.status }}
+      funding_source:     ${{ steps.resolve-funding.outputs.source }}
+      sponsorships_enabled: ${{ steps.check-funding-alignment.outputs.repo_sponsorships_enabled }}
+      effective_link_count: ${{ steps.check-funding-alignment.outputs.effective_link_count }}
+      alignment_status:   ${{ steps.check-funding-alignment.outputs.alignment_status }}
     steps:
+      # -------------------------------------------------------------------
+      # Resolve the auth token used for the push to `main` + tag publish.
+      #
+      # Default path (no secret set):
+      #   Uses `secrets.GITHUB_TOKEN` — the per-job workflow token.
+      #   Identity: github-actions[bot] (Integration App ID 15368).
+      #   Scope:    `permissions: { contents: write }` on this job.
+      #   TTL:      lifetime of this job.
+      #
+      # Elevated path (RELEASE_PAT secret set on this repo or org):
+      #   Uses the PAT for both `actions/checkout` (which writes the
+      #   token into `.git/config` as an http.extraheader) and the
+      #   `promote` composite's `git push`. Required when `main` is
+      #   locked behind a ruleset or classic protection that
+      #   GITHUB_TOKEN cannot bypass — in which case the PAT's
+      #   identity (or the App backing a fine-grained PAT) MUST be
+      #   listed in the ruleset's `bypass_actors`.
+      #
+      # Validation:
+      #   When RELEASE_PAT is present we probe `/user` (catches
+      #   expired/revoked/typo) and `repos/<owner>/<repo>.permissions`
+      #   (catches under-scoped tokens) BEFORE checkout. Any failure
+      #   is fatal with a remediation hint — silent fallback to
+      #   GITHUB_TOKEN on a misconfigured PAT would hide the fact
+      #   that the operator INTENDED elevated auth.
+      #
+      # Required PAT scopes (fine-grained, recommended):
+      #   - Contents:  Read & Write
+      #   - Metadata:  Read-only
+      #
+      # See repo memory `bos-marketplace-kit main branch protection`
+      # for the long-term ruleset+bypass migration story.
+      # -------------------------------------------------------------------
+      - id: resolve-token
+        name: Resolve release token
+        env:
+          HAS_RELEASE_PAT: ${{ secrets.RELEASE_PAT != '' && 'true' || 'false' }}
+          REPO:            ${{ github.repository }}
+          # `gh` reads from GH_TOKEN; pick PAT if available, else default.
+          GH_TOKEN:        ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if [ "${HAS_RELEASE_PAT}" != "true" ]; then
+            echo "::notice title=Release token::Using default GITHUB_TOKEN (RELEASE_PAT not configured). Identity: github-actions[bot] (App ID 15368), scoped by job permissions.contents=write."
+            {
+              echo "token_kind=default"
+              echo "token_identity=github-actions[bot]"
+            } >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          # ----- PAT probe 1: validity (revoked / expired / typo) ------
+          if ! identity_json="$(gh api /user 2>&1)"; then
+            echo "::error title=RELEASE_PAT invalid::Probe of /user failed. The PAT may be expired, revoked, or malformed."
+            printf '%s\n' "${identity_json}" | sed 's/^/  /'
+            echo "::error::Remediation: regenerate a fine-grained PAT with Contents: Read & Write on ${REPO} and update the RELEASE_PAT secret. Or unset RELEASE_PAT to fall back to GITHUB_TOKEN."
+            exit 1
+          fi
+          login="$(printf '%s' "${identity_json}" | jq -r '.login // "unknown"')"
+
+          # ----- PAT probe 2: scope (must have push on this repo) ------
+          if ! perms_json="$(gh api "repos/${REPO}" --jq '.permissions // {}' 2>&1)"; then
+            echo "::error title=RELEASE_PAT lacks repo access::Identity '${login}' cannot read ${REPO}."
+            printf '%s\n' "${perms_json}" | sed 's/^/  /'
+            echo "::error::Remediation: ensure the PAT grants Metadata: Read-only on ${REPO}."
+            exit 1
+          fi
+          push_perm="$(printf '%s' "${perms_json}" | jq -r '.push // false')"
+          if [ "${push_perm}" != "true" ]; then
+            echo "::error title=RELEASE_PAT under-scoped::Identity '${login}' lacks push permission on ${REPO}."
+            echo "::error::Got permissions: ${perms_json}"
+            echo "::error::Remediation: grant Contents: Read & Write (fine-grained) or 'repo' (classic) and re-save the RELEASE_PAT secret."
+            exit 1
+          fi
+
+          echo "::notice title=Release token::Using RELEASE_PAT. Identity: ${login}. Push permission: confirmed on ${REPO}."
+          {
+            echo "token_kind=pat"
+            echo "token_identity=${login}"
+          } >> "${GITHUB_OUTPUT}"
+
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: dev
           fetch-depth: 0
           persist-credentials: true
+          # When RELEASE_PAT is set, checkout writes IT into the local
+          # git extraheader; the promote composite's `git push` then
+          # carries the PAT's identity. When RELEASE_PAT is absent,
+          # the `||` falls through to GITHUB_TOKEN (checkout's own
+          # default, made explicit here for clarity).
+          token: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
+
+      # -------------------------------------------------------------------
+      # Resolve FUNDING.yml strategy.
+      #
+      # The `extra_allowlist_paths` block below conditionally includes
+      # `.github/FUNDING.yml` based on this step's `include_in_allowlist`
+      # output. The promote composite is generic — it has no knowledge of
+      # GitHub's default-community-health-files inheritance semantics —
+      # so deciding "is this path missing for a good reason?" lives here.
+      #
+      # Resolution (driven by `vars.BOS_FUNDING_ENABLED`, default `true`):
+      #
+      #   disabled              -> skip path; one notice; no probes.
+      #   per-repo on dev       -> include path; promotes the override.
+      #   org inheritance OK    -> skip path; emit ::notice:: confirming
+      #                            source; no spurious "not found" from
+      #                            promote.
+      #   anything else         -> skip path; emit ::warning:: with the
+      #                            specific failure mode + remediation
+      #                            (Sponsor button will be absent).
+      #
+      # Org default-files inheritance only fires when the org `.github`
+      # repo is PUBLIC. Private/internal blocks it. User-owned repos get
+      # no inheritance at all (no org -> no org-defaults repo).
+      # https://docs.github.com/communities/setting-up-your-project-for-healthy-contributions/creating-a-default-community-health-file
+      # -------------------------------------------------------------------
+      - id: resolve-funding
+        name: Resolve FUNDING.yml strategy
+        env:
+          OWNER:           ${{ github.repository_owner }}
+          REPO:            ${{ github.repository }}
+          # Default ON when unset; any non-truthy value disables.
+          FUNDING_ENABLED: ${{ vars.BOS_FUNDING_ENABLED == '' && 'true' || vars.BOS_FUNDING_ENABLED }}
+          GH_TOKEN:        ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          emit() {
+            # emit <include_in_allowlist> <status> <source>
+            {
+              echo "include_in_allowlist=$1"
+              echo "status=$2"
+              echo "source=$3"
+            } >> "${GITHUB_OUTPUT}"
+          }
+
+          is_true() {
+            case "${1:-}" in
+              true|TRUE|True|1|yes|YES|on|ON) return 0 ;;
+              *) return 1 ;;
+            esac
+          }
+
+          if ! is_true "${FUNDING_ENABLED}"; then
+            echo "::notice title=FUNDING::Disabled via vars.BOS_FUNDING_ENABLED. Skipping .github/FUNDING.yml; no Sponsor button will appear on the Marketplace listing or the repo header."
+            emit false disabled 'disabled by vars.BOS_FUNDING_ENABLED'
+            exit 0
+          fi
+
+          # --- Tier 1: per-repo override on dev (highest precedence) ---
+          if gh api "repos/${REPO}/contents/.github/FUNDING.yml?ref=dev" >/dev/null 2>&1; then
+            echo "::notice title=FUNDING::Per-repo override present on dev (.github/FUNDING.yml). Will be promoted to main; overrides any org default."
+            emit true per-repo 'per-repo override (.github/FUNDING.yml on dev)'
+            exit 0
+          fi
+
+          # --- Tier 2: org-default inheritance ---
+          # User-owned repos don't get default-files inheritance at all.
+          owner_type="$(gh api "users/${OWNER}" --jq '.type // ""' 2>/dev/null || echo '')"
+          if [ "${owner_type}" != "Organization" ]; then
+            echo "::warning title=FUNDING::Repo owner '${OWNER}' is a user account, not an organization, so GitHub's default-community-health-files inheritance does not apply. No per-repo .github/FUNDING.yml on dev either. Sponsor button will be absent. Remediation: add .github/FUNDING.yml on dev, OR transfer the repo to an org and create '<org>/.github' with FUNDING.yml, OR set vars.BOS_FUNDING_ENABLED=false to acknowledge and silence."
+            emit false user-no-inheritance 'none (user-owned repo, no inheritance available)'
+            exit 0
+          fi
+
+          # Does the org .github repo exist AND is it visible to GITHUB_TOKEN?
+          # GITHUB_TOKEN can read public repos in any org, so a 404 here
+          # means the repo either doesn't exist OR is private/internal
+          # (which would also disqualify it from inheritance anyway —
+          # default-files inheritance is public-only).
+          if ! org_dotgithub="$(gh api "repos/${OWNER}/.github" 2>/dev/null)"; then
+            echo "::warning title=FUNDING::Org '${OWNER}' has no public .github repository (404 from GITHUB_TOKEN — either missing, or private/internal which also blocks inheritance). Sponsor button will be absent. Remediation: create or flip ${OWNER}/.github to PUBLIC with FUNDING.yml, OR add a per-repo .github/FUNDING.yml on dev, OR set vars.BOS_FUNDING_ENABLED=false."
+            emit false no-org-dotgithub 'none (org has no public .github repo)'
+            exit 0
+          fi
+
+          # Inheritance only fires for PUBLIC org .github repos.
+          dotgithub_visibility="$(printf '%s' "${org_dotgithub}" | jq -r '.visibility // (.private | if . then "private" else "public" end)')"
+          if [ "${dotgithub_visibility}" != "public" ]; then
+            echo "::warning title=FUNDING::${OWNER}/.github exists but is '${dotgithub_visibility}'. GitHub's default-community-health-files inheritance only fires for PUBLIC .github repos, so FUNDING.yml will NOT inherit. Remediation: flip ${OWNER}/.github to public, OR add a per-repo .github/FUNDING.yml on dev, OR set vars.BOS_FUNDING_ENABLED=false."
+            emit false org-dotgithub-not-public "none (${OWNER}/.github is ${dotgithub_visibility})"
+            exit 0
+          fi
+
+          # Locate FUNDING.yml inside the org .github repo (any of the
+          # three valid locations GitHub honors).
+          found=''
+          for candidate in FUNDING.yml .github/FUNDING.yml docs/FUNDING.yml; do
+            if gh api "repos/${OWNER}/.github/contents/${candidate}" >/dev/null 2>&1; then
+              found="${candidate}"
+              break
+            fi
+          done
+
+          if [ -z "${found}" ]; then
+            echo "::warning title=FUNDING::${OWNER}/.github is public but contains no FUNDING.yml (checked: FUNDING.yml, .github/FUNDING.yml, docs/FUNDING.yml). Sponsor button will be absent. Remediation: add FUNDING.yml to ${OWNER}/.github, OR add a per-repo .github/FUNDING.yml on dev, OR set vars.BOS_FUNDING_ENABLED=false."
+            emit false org-missing-funding "none (${OWNER}/.github has no FUNDING.yml)"
+            exit 0
+          fi
+
+          # All checks passed — inheritance is wired up correctly.
+          echo "::notice title=FUNDING::Inherited from ${OWNER}/.github (path: ${found}). No per-repo override needed; Sponsor button serves the org default. .github/FUNDING.yml intentionally excluded from extra_allowlist_paths."
+          emit false inherited "org default (${OWNER}/.github/${found})"
+
+      # -------------------------------------------------------------------
+      # Cross-check FUNDING content against the repo-level Sponsorships
+      # feature flag (Settings → Features → Sponsorships).
+      #
+      # The feature flag controls whether the Sponsor button RENDERS.
+      # It is independent of FUNDING.yml content (per-repo or inherited).
+      # The two can drift:
+      #
+      #   - Button ON + zero links rendered  -> "button-empty": visitors
+      #     see a Sponsor button that opens an empty modal.
+      #   - Button OFF + content present     -> "links-hidden": FUNDING.yml
+      #     is wired but no button is shown.
+      #
+      # GitHub exposes Repository.hasSponsorshipsEnabled and
+      # Repository.fundingLinks for READING (GraphQL, default token). The
+      # rendered link list is the ground truth — it accounts for malformed
+      # YAML, inheritance breakage, and platform-side caching that the
+      # resolver's content probes cannot see.
+      #
+      # There is NO public mutation to flip the feature flag (no REST
+      # `PATCH /repos/{}` field, no GraphQL mutation — GitHub keeps it
+      # human-gated). This step is detection-only: warn loudly with a
+      # one-click Settings URL on misalignment, never fail the release.
+      # -------------------------------------------------------------------
+      - id: check-funding-alignment
+        name: Check Sponsorships feature vs FUNDING content
+        env:
+          REPO:            ${{ github.repository }}
+          FUNDING_STATUS:  ${{ steps.resolve-funding.outputs.status }}
+          GH_TOKEN:        ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          emit() {
+            # emit <repo_sponsorships_enabled> <effective_link_count> <alignment_status>
+            {
+              echo "repo_sponsorships_enabled=$1"
+              echo "effective_link_count=$2"
+              echo "alignment_status=$3"
+            } >> "${GITHUB_OUTPUT}"
+          }
+
+          # Read the rendered feature flag + effective link list.
+          # Treat probe failure as non-fatal (transient API issue).
+          owner="${REPO%/*}"
+          name="${REPO#*/}"
+          # shellcheck disable=SC2016  # $owner/$name below are GraphQL placeholders,
+          # resolved by `gh api graphql -f owner=... -f name=...`, not shell vars.
+          if ! gql_json="$(gh api graphql \
+              -f query='query($owner:String!,$name:String!){repository(owner:$owner,name:$name){hasSponsorshipsEnabled fundingLinks{platform url}}}' \
+              -f owner="${owner}" -f name="${name}" 2>&1)"; then
+            echo "::notice title=Sponsorships::Could not read repo Sponsorships state (GraphQL probe failed). Skipping alignment check."
+            printf '%s\n' "${gql_json}" | sed 's/^/  /'
+            emit unknown 0 unknown
+            exit 0
+          fi
+
+          has_sponsorships="$(printf '%s' "${gql_json}" | jq -r '.data.repository.hasSponsorshipsEnabled // false')"
+          link_count="$(printf '%s' "${gql_json}" | jq -r '.data.repository.fundingLinks | length')"
+
+          # Did the resolver intend content to be present?
+          case "${FUNDING_STATUS}" in
+            per-repo|inherited) content_intended=true ;;
+            *)                  content_intended=false ;;
+          esac
+
+          settings_url="https://github.com/${REPO}/settings"
+
+          # --- Aligned: button on + serving links ---
+          if [ "${has_sponsorships}" = "true" ] && [ "${link_count}" -gt 0 ]; then
+            echo "::notice title=Sponsorships::Aligned. Sponsor button is enabled and serves ${link_count} link(s). FUNDING source: ${FUNDING_STATUS}."
+            emit true "${link_count}" aligned
+            exit 0
+          fi
+
+          # --- Aligned-off: button off + no content intended ---
+          if [ "${has_sponsorships}" != "true" ] && [ "${content_intended}" != "true" ]; then
+            echo "::notice title=Sponsorships::Aligned (off). Sponsor button is disabled and no FUNDING content is intended. Consistent state."
+            emit false "${link_count}" aligned-off
+            exit 0
+          fi
+
+          # --- Misaligned: button-empty (flag on but zero links rendered) ---
+          if [ "${has_sponsorships}" = "true" ] && [ "${link_count}" -eq 0 ]; then
+            echo "::warning title=Sponsorships::MISALIGNED — button-empty. Repo Sponsorships feature is ON but GitHub renders zero funding links. Visitors see a Sponsor button that opens an empty modal. Funding source resolved as '${FUNDING_STATUS}'. Remediation: (a) fix the FUNDING source (per-repo .github/FUNDING.yml on dev, or org-level <org>/.github/FUNDING.yml — ensure YAML is valid); OR (b) untick Settings → Features → Sponsorships at ${settings_url}; OR (c) set vars.BOS_FUNDING_ENABLED=false to acknowledge."
+            emit true 0 button-empty
+            exit 0
+          fi
+
+          # --- Misaligned: links-hidden (content present but flag off) ---
+          if [ "${has_sponsorships}" != "true" ] && [ "${content_intended}" = "true" ]; then
+            echo "::warning title=Sponsorships::MISALIGNED — links-hidden. FUNDING content is present (source: ${FUNDING_STATUS}, ${link_count} link(s) would be served) but the repo Sponsorships feature is OFF, so no Sponsor button is rendered. Remediation: tick Settings → Features → Sponsorships at ${settings_url} (one-time, human-only — there is no API to flip this)."
+            emit false "${link_count}" links-hidden
+            exit 0
+          fi
+
+          # Catch-all (should be unreachable given the four cases above).
+          echo "::notice title=Sponsorships::Indeterminate state: hasSponsorshipsEnabled=${has_sponsorships}, link_count=${link_count}, funding_status=${FUNDING_STATUS}."
+          emit "${has_sponsorships}" "${link_count}" indeterminate
 
       - id: promote
         uses: ./.github/actions/promote
@@ -622,9 +930,13 @@ jobs:
           #   * .github/CODEOWNERS    — affects PR review-routing on main
           #   * .github/dependabot.yml — Dependabot reads ONLY default branch
           #
-          # FUNDING.yml inherits from the org `.github` repo; the
-          # `.github/FUNDING.yml` extra below is a no-op unless a
-          # per-repo override is intentionally added.
+          # FUNDING.yml is resolved dynamically by the `resolve-funding`
+          # step above. When org inheritance is in effect, the path is
+          # EXCLUDED from extra_allowlist_paths (no spurious "not found"
+          # notice from promote). When a per-repo override exists on dev,
+          # the path is INCLUDED so the override promotes. When funding
+          # is disabled (`vars.BOS_FUNDING_ENABLED=false`), the path is
+          # excluded entirely.
           # See https://docs.github.com/communities/setting-up-your-project-for-healthy-contributions/creating-a-default-community-health-file
           #
           # Deliberately NOT promoted to main (dev-only):
@@ -654,7 +966,7 @@ jobs:
           extra_allowlist_paths: |
             .github/CODEOWNERS
             .github/dependabot.yml
-            .github/FUNDING.yml
+            ${{ steps.resolve-funding.outputs.include_in_allowlist == 'true' && '.github/FUNDING.yml' || '' }}
           tag_name:       ${{ needs.compute-tag.outputs.tag_name }}
           commit_message: 'release: ${{ needs.compute-tag.outputs.tag_name }}'
           dry_run:        ${{ inputs.dry_run }}
@@ -669,6 +981,13 @@ jobs:
           DRY_RUN:            ${{ inputs.dry_run }}
           REMOVED_PATHS:      ${{ steps.promote.outputs.removed_paths }}
           REMOVED_VIOLATIONS: ${{ steps.promote.outputs.removed_violations }}
+          TOKEN_KIND:         ${{ steps.resolve-token.outputs.token_kind }}
+          TOKEN_IDENTITY:     ${{ steps.resolve-token.outputs.token_identity }}
+          FUNDING_STATUS:     ${{ steps.resolve-funding.outputs.status }}
+          FUNDING_SOURCE:     ${{ steps.resolve-funding.outputs.source }}
+          SPONSORSHIPS_ENABLED: ${{ steps.check-funding-alignment.outputs.repo_sponsorships_enabled }}
+          LINK_COUNT:         ${{ steps.check-funding-alignment.outputs.effective_link_count }}
+          ALIGNMENT_STATUS:   ${{ steps.check-funding-alignment.outputs.alignment_status }}
         run: |
           {
             echo "## Release promote"
@@ -682,6 +1001,10 @@ jobs:
             echo "| Tag           | \`${TAG_NAME}\` |"
             echo "| Promoted      | \`${PROMOTED}\` |"
             echo "| Dry run       | \`${DRY_RUN}\` |"
+            echo "| Auth token    | \`${TOKEN_KIND:-default}\` (\`${TOKEN_IDENTITY:-github-actions[bot]}\`) |"
+            echo "| Funding       | \`${FUNDING_STATUS:-unknown}\` — ${FUNDING_SOURCE:-n/a} |"
+            echo "| Sponsor button | feature \`${SPONSORSHIPS_ENABLED:-unknown}\`, ${LINK_COUNT:-0} link(s) rendered |"
+            echo "| Alignment     | \`${ALIGNMENT_STATUS:-unknown}\` |"
             echo ""
             if [ -n "${REMOVED_VIOLATIONS}" ]; then
               echo "### Marketplace violations stripped"

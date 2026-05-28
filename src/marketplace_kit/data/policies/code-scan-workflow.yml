@@ -74,6 +74,25 @@
 # `bos-automation-hub/.github/workflows/bos-launchpad-code-scan.yml`
 # whenever the hub rolls a new pin set. The literal SHAs here are
 # documentary only — the hub reusable is the source of truth.
+#
+# ────────────────────────────────────────────────────────────────────
+# SCANNING_PAT — what to put in the secret
+# ────────────────────────────────────────────────────────────────────
+# `SCANNING_PAT` is optional. When absent, PS002 (secret scanning),
+# PS003 (Dependabot alerts), and PS020-PS025 (branch protection) emit
+# `skip` findings because `GITHUB_TOKEN` lacks admin reach. Adding the
+# PAT upgrades those rows to real `pass`/`fail` evaluations.
+#
+# Classic PAT: tick ONLY `repo` (top-level). Untick `workflow`,
+# `admin:org`, `admin:enterprise`, `delete_repo`, `*:packages`,
+# `admin:*_hook`, `gist`, `user`, `audit_log`. Configure SSO →
+# Authorize for every SAML-enforced org. See
+# https://github.com/blackoutsecure/bos-code-scanning-kit#-scanning_pat--advanced-posture-credentials
+# for the full classic + fine-grained checklist.
+#
+# Storage: this repo's Settings → Secrets and variables → Actions →
+# Secrets → `SCANNING_PAT` (or at the org level with this repo in
+# the access policy). Rotate ≤90 days.
 
 name: Security scan
 

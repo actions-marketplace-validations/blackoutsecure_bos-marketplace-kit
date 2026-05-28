@@ -601,37 +601,46 @@ jobs:
       alignment_status:   ${{ steps.check-funding-alignment.outputs.alignment_status }}
     steps:
       # -------------------------------------------------------------------
-      # Resolve the auth token used for the push to `main` + tag publish.
+      # Resolve which git credential we'll use for the push to main + tag.
+      # See repo README § "Step 5b — Tokens, secrets, and variables" for
+      # the operator-facing contract; this block is the runtime enforcer.
       #
-      # Default path (no secret set):
-      #   Uses `secrets.GITHUB_TOKEN` — the per-job workflow token.
-      #   Identity: github-actions[bot] (Integration App ID 15368).
-      #   Scope:    `permissions: { contents: write }` on this job.
-      #   TTL:      lifetime of this job.
+      # Decision tree:
+      #   secrets.RELEASE_PAT set?
+      #     yes -> probe 1: /user             (PAT valid?)
+      #            probe 2: repos/{}.permissions.push  (user has push role?)
+      #            probe 3: POST /repos/{}/git/blobs   (TOKEN scope has
+      #                     Contents:Write? — probe 2 only reflects user
+      #                     role, not the token's selected scopes. A
+      #                     fine-grained PAT with only Metadata:Read or a
+      #                     classic PAT without 'repo' ticked will pass
+      #                     probe 2 but fail probe 3 and would 403 on the
+      #                     real push.) Created blob is dangling and
+      #                     GitHub's git GC reclaims it.
+      #            all three OK -> use PAT.
+      #     no  -> use GITHUB_TOKEN (per-job, App 15368, github-actions[bot]).
       #
-      # Elevated path (RELEASE_PAT secret set on this repo or org):
-      #   Uses the PAT for both `actions/checkout` (which writes the
-      #   token into `.git/config` as an http.extraheader) and the
-      #   `promote` composite's `git push`. Required when `main` is
-      #   locked behind a ruleset or classic protection that
-      #   GITHUB_TOKEN cannot bypass — in which case the PAT's
-      #   identity (or the App backing a fine-grained PAT) MUST be
-      #   listed in the ruleset's `bypass_actors`.
+      # Classic PAT scope (when RELEASE_PAT is a classic token):
+      #   Required:  'repo' (top-level only — there is no narrower
+      #              classic scope that grants ref/tag write).
+      #   Forbidden: admin:org, admin:enterprise, workflow, delete_repo,
+      #              admin:repo_hook, write:packages — none are used by
+      #              the release path and all widen blast radius.
+      #   SAML:      classic PATs also need 'Configure SSO → Authorize'
+      #              for every SAML-enforced org. SAML failures appear
+      #              as 'Resource protected by organization SAML
+      #              enforcement' in stderr; the probes below detect
+      #              that string and emit a SAML-specific remediation.
+      # Fine-grained PAT scope:
+      #   Required:  Repository permissions → Contents: Read & Write,
+      #              Metadata: Read-only (auto-selected with Contents).
+      #   Forbidden: anything else.
       #
-      # Validation:
-      #   When RELEASE_PAT is present we probe `/user` (catches
-      #   expired/revoked/typo) and `repos/<owner>/<repo>.permissions`
-      #   (catches under-scoped tokens) BEFORE checkout. Any failure
-      #   is fatal with a remediation hint — silent fallback to
-      #   GITHUB_TOKEN on a misconfigured PAT would hide the fact
-      #   that the operator INTENDED elevated auth.
-      #
-      # Required PAT scopes (fine-grained, recommended):
-      #   - Contents:  Read & Write
-      #   - Metadata:  Read-only
-      #
-      # See repo memory `bos-marketplace-kit main branch protection`
-      # for the long-term ruleset+bypass migration story.
+      # In either case, if the operator gets it wrong we fail fast HERE
+      # with a remediation hint, instead of letting `git push` fail later
+      # with a confusing "Permission denied to <user>" message. Silent
+      # fallback to GITHUB_TOKEN on a misconfigured PAT would hide
+      # operator intent.
       # -------------------------------------------------------------------
       - id: resolve-token
         name: Resolve release token
@@ -656,25 +665,66 @@ jobs:
           if ! identity_json="$(gh api /user 2>&1)"; then
             echo "::error title=RELEASE_PAT invalid::Probe of /user failed. The PAT may be expired, revoked, or malformed."
             printf '%s\n' "${identity_json}" | sed 's/^/  /'
-            echo "::error::Remediation: regenerate a fine-grained PAT with Contents: Read & Write on ${REPO} and update the RELEASE_PAT secret. Or unset RELEASE_PAT to fall back to GITHUB_TOKEN."
+            # Even /user can SAML-fail if the PAT was authorized for the org and
+            # then revoked at the org level; surface that distinctly.
+            if printf '%s' "${identity_json}" | grep -qi 'SAML'; then
+              echo "::error::Remediation: SAML SSO authorization for this PAT was revoked. Re-authorize at https://github.com/settings/tokens (find the PAT, click 'Configure SSO') OR unset the RELEASE_PAT secret to fall back to GITHUB_TOKEN."
+            else
+              echo "::error::Remediation: regenerate a fine-grained PAT with Contents: Read & Write on ${REPO} and update the RELEASE_PAT secret. Or unset RELEASE_PAT to fall back to GITHUB_TOKEN."
+            fi
             exit 1
           fi
           login="$(printf '%s' "${identity_json}" | jq -r '.login // "unknown"')"
 
           # ----- PAT probe 2: scope (must have push on this repo) ------
+          # Note: SAML-enforced orgs return 403 here even for a perfectly-scoped
+          # PAT if the PAT itself has never been SSO-authorized for the org.
+          # Distinguish that case from a genuinely under-scoped PAT.
+          owner="${REPO%/*}"
           if ! perms_json="$(gh api "repos/${REPO}" --jq '.permissions // {}' 2>&1)"; then
-            echo "::error title=RELEASE_PAT lacks repo access::Identity '${login}' cannot read ${REPO}."
-            printf '%s\n' "${perms_json}" | sed 's/^/  /'
-            echo "::error::Remediation: ensure the PAT grants Metadata: Read-only on ${REPO}."
+            if printf '%s' "${perms_json}" | grep -qi 'SAML'; then
+              echo "::error title=RELEASE_PAT not SSO-authorized::Identity '${login}' has a valid PAT but it is NOT authorized for the SAML-enforced '${owner}' organization, so it cannot see ${REPO}."
+              printf '%s\n' "${perms_json}" | sed 's/^/  /'
+              echo "::error::Remediation A (keep PAT path): visit https://github.com/orgs/${owner}/sso, click 'Authorize' for the PAT named in RELEASE_PAT. The PAT must also be configured at https://github.com/settings/tokens with 'Configure SSO' → '${owner}'. Then re-run."
+              echo "::error::Remediation B (drop PAT path): delete the RELEASE_PAT secret in repo Settings → Secrets and variables → Actions. The workflow will fall back to GITHUB_TOKEN (github-actions[bot], App 15368), which works whenever main branch protection does not require a PR."
+            else
+              echo "::error title=RELEASE_PAT lacks repo access::Identity '${login}' cannot read ${REPO}."
+              printf '%s\n' "${perms_json}" | sed 's/^/  /'
+              echo "::error::Remediation: ensure the PAT grants Metadata: Read-only AND Contents: Read & Write on ${REPO}. Or unset RELEASE_PAT to fall back to GITHUB_TOKEN."
+            fi
             exit 1
           fi
           push_perm="$(printf '%s' "${perms_json}" | jq -r '.push // false')"
           if [ "${push_perm}" != "true" ]; then
             echo "::error title=RELEASE_PAT under-scoped::Identity '${login}' lacks push permission on ${REPO}."
             echo "::error::Got permissions: ${perms_json}"
-            echo "::error::Remediation: grant Contents: Read & Write (fine-grained) or 'repo' (classic) and re-save the RELEASE_PAT secret."
+            echo "::error::Remediation: grant Contents: Read & Write (fine-grained) or 'repo' (classic) and re-save the RELEASE_PAT secret. Or unset RELEASE_PAT to fall back to GITHUB_TOKEN."
             exit 1
           fi
+
+          # ----- PAT probe 3: actual Contents:Write capability ---------
+          # The probe above reports the AUTHENTICATED USER'S role on the
+          # repo, not the PAT's scope. A fine-grained PAT with only
+          # Metadata:Read-only selected for the user '${login}' will pass
+          # probe 2 (because '${login}' the user has push) yet still 403
+          # at git push time (because the TOKEN doesn't grant write).
+          #
+          # `POST /repos/{}/git/blobs` requires exactly Contents:Write
+          # (per GitHub fine-grained PAT permissions matrix). The created
+          # blob is dangling — not referenced by any tree, commit, or ref
+          # — and GitHub's git GC reclaims it. Safe + idempotent + the
+          # smallest possible write test.
+          if ! blob_resp="$(gh api -X POST "repos/${REPO}/git/blobs" \
+              -f content='release-pat-write-probe' \
+              -f encoding='utf-8' 2>&1)"; then
+            echo "::error title=RELEASE_PAT missing Contents:Write::Identity '${login}' has repo-level push permission, but the PAT token itself does NOT grant Contents: Read & Write on ${REPO}. The probe (create dangling blob) was denied."
+            printf '%s\n' "${blob_resp}" | sed 's/^/  /'
+            echo "::error::Remediation A: edit the PAT at https://github.com/settings/tokens, add 'Repository permissions \u2192 Contents: Read & Write' (fine-grained) or 'repo' (classic), re-save the RELEASE_PAT secret."
+            echo "::error::Remediation B: delete the RELEASE_PAT secret entirely \u2014 the workflow falls back to GITHUB_TOKEN (github-actions[bot], App 15368), which has Contents:Write by default since main branch protection does not require a PR."
+            exit 1
+          fi
+          probe_sha="$(printf '%s' "${blob_resp}" | jq -r '.sha // ""')"
+          echo "Write probe OK (created dangling blob ${probe_sha:0:7}, will be garbage-collected)."
 
           echo "::notice title=Release token::Using RELEASE_PAT. Identity: ${login}. Push permission: confirmed on ${REPO}."
           {

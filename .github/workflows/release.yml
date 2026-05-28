@@ -453,6 +453,12 @@ jobs:
   release:
     name: GitHub Release
     needs: [preflight-runner-config, promote]
+    # The promote action always publishes the requested tag on success
+    # (either via a new commit on `main`, or by tagging the existing
+    # `main` HEAD when the allowlisted source tree was already in sync),
+    # so `promoted == 'true'` is the right gate for "tag exists on origin;
+    # publish the GitHub Release". The gate only short-circuits this job
+    # when `dry_run: true` or when promote itself failed.
     if: ${{ needs.promote.outputs.promoted == 'true' && !inputs.dry_run }}
     # Resolves `vars.DEFAULT_RUNNER` (bare label or JSON-array string).
     # Both presence and shape are enforced by `preflight-runner-config`,

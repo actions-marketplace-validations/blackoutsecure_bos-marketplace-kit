@@ -139,7 +139,10 @@ inputs:
 outputs:
   target_sha:
     description: >-
-      SHA of the new commit on `target_branch` (empty when `dry_run`).
+      SHA on `target_branch` that the new tag points at. This is the
+      new promotion commit when one was created, or the existing
+      `target_branch` HEAD when the allowlisted source tree was
+      already in sync. Empty when `dry_run: true`.
     value: ${{ steps.run.outputs.target_sha }}
   source_sha:
     description: 'SHA on `source_branch` that was promoted.'
@@ -149,9 +152,14 @@ outputs:
     value: ${{ steps.run.outputs.tag_name }}
   promoted:
     description: >-
-      `true` when a new commit was created and pushed; `false` when
-      the target branch already matched the allowlisted source tree
-      (no-op) or when `dry_run: true`.
+      `true` when the requested tag was published to origin — either
+      by creating a new promotion commit on `target_branch` and
+      tagging it, or by tagging the existing `target_branch` HEAD
+      when the allowlisted source tree already matched (this keeps
+      `workflow_dispatch` releases idempotent: an explicit operator
+      release always produces a tag and a GitHub Release, even when
+      the allowlisted tree is unchanged). `false` only when
+      `dry_run: true` (no remote state changed).
     value: ${{ steps.run.outputs.promoted }}
   removed_paths:
     description: >-
@@ -424,16 +432,74 @@ runs:
 
         promote_into_worktree "${SOURCE_SHA}"
 
-        # ----- Detect no-op -------------------------------------------------
+        # ----- Detect no-op (allowlisted trees already in sync) -------------
+        # When `target_branch` already matches the allowlisted source
+        # tree there is no promotion commit to create — but a release
+        # dispatch is an explicit operator action and silently
+        # skipping the tag/release would be a footgun (e.g. a release
+        # cut after a CI-only or test-only change on `source_branch`,
+        # both of which are excluded from the allowlist by design).
+        #
+        # So we still publish the requested tag, pointing at the
+        # existing `target_branch` HEAD, and emit `promoted=true` so
+        # downstream gates publish the GitHub Release. `dry_run` short-
+        # circuits below with `promoted=false` so no remote state
+        # changes.
         if ( cd "${WORKTREE_DIR}" && git diff --cached --quiet ); then
-          echo "Target branch '${TARGET_BRANCH}' already matches the allowlisted source tree; nothing to promote."
+          echo "Target branch '${TARGET_BRANCH}' already matches the allowlisted source tree; no promotion commit needed."
+
+          if [ "${DRY_RUN}" = "true" ]; then
+            echo "dry_run=true; would tag existing '${TARGET_BRANCH}' HEAD with '${TAG_NAME_INPUT}' (not pushing)."
+            {
+              echo "promoted=false"
+              echo "target_sha="
+              echo "source_sha=${SOURCE_SHA}"
+              echo "tag_name=${TAG_NAME_INPUT}"
+            } >> "${GITHUB_OUTPUT}"
+            emit_removal_outputs
+            exit 0
+          fi
+
+          # Tag the existing target HEAD and push the tag.
+          TARGET_SHA="$( cd "${WORKTREE_DIR}" && git rev-parse HEAD )"
+          echo "::notice title=Marketplace promote::Allowlisted source tree already matches '${TARGET_BRANCH}'; tagging existing HEAD ${TARGET_SHA:0:12} with ${TAG_NAME_INPUT} (no promotion commit)."
+          (
+            cd "${WORKTREE_DIR}"
+            git tag -a "${TAG_NAME_INPUT}" -m "${COMMIT_MSG}" "${TARGET_SHA}"
+            git push origin "refs/tags/${TAG_NAME_INPUT}"
+          )
           {
-            echo "promoted=false"
-            echo "target_sha="
+            echo "promoted=true"
+            echo "target_sha=${TARGET_SHA}"
             echo "source_sha=${SOURCE_SHA}"
             echo "tag_name=${TAG_NAME_INPUT}"
           } >> "${GITHUB_OUTPUT}"
           emit_removal_outputs
+
+          # ----- Floating major tag (same semantics as commit path) ----
+          if [ "${UPDATE_MAJOR_TAG}" = 'true' ]; then
+            major_num="${TAG_NAME_INPUT#v}"
+            major_num="${major_num%%.*}"
+            case "${major_num}" in
+              ''|*[!0-9]*)
+                echo "::warning::could not derive major from '${TAG_NAME_INPUT}'; skipping major-tag update"
+                ;;
+              *)
+                major_tag="v${major_num}"
+                if [ "${major_tag}" = "${TAG_NAME_INPUT}" ]; then
+                  echo "Major tag '${major_tag}' equals the release tag; skipping rewrite."
+                else
+                  (
+                    cd "${WORKTREE_DIR}"
+                    git tag -f "${major_tag}" "${TARGET_SHA}"
+                    git push --force origin "refs/tags/${major_tag}"
+                  )
+                  echo "Major tag '${major_tag}' moved to ${TARGET_SHA:0:12}."
+                fi
+                ;;
+            esac
+          fi
+
           exit 0
         fi
 

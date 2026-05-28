@@ -229,9 +229,16 @@ runs:
             # tells operators what to do when it can't be honoured.
             if ! command -v npm >/dev/null 2>&1; then
               if command -v sudo >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
-                info "npm not found; attempting apt-get install nodejs npm"
-                sudo apt-get update -qq || true
-                sudo apt-get install -y -qq nodejs npm >/dev/null 2>&1 || true
+                # Hard 90 s ceiling on each apt call. Lean self-hosted
+                # runners occasionally point at a slow/unreachable
+                # mirror; without `timeout` the install can hang for
+                # the entire job timeout (we've seen 4-5 min stalls
+                # cancelled by the runner). Treat hang == fail and let
+                # the `command -v npm` re-check below trigger the
+                # graceful "skip with warning" path.
+                info "npm not found; attempting apt-get install nodejs npm (90s timeout)"
+                timeout 90 sudo apt-get update -qq || true
+                timeout 90 sudo apt-get install -y -qq nodejs npm >/dev/null 2>&1 || true
               fi
             fi
             if ! command -v npm >/dev/null 2>&1; then
@@ -293,16 +300,16 @@ runs:
               fi
             fi
             if [[ "${INSTALLED}" -eq 0 ]] && command -v sudo >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
-              info "pip unavailable; attempting to install python3-pip then retry pip install"
-              if sudo apt-get update -qq >/dev/null 2>&1 \
-                 && sudo apt-get install -y -qq python3-pip >/dev/null 2>&1 \
-                 && python3 -m pip install --quiet "yamllint==${YAMLLINT_VERSION}"; then
+              info "pip unavailable; attempting to install python3-pip then retry pip install (90s timeout per apt call)"
+              if timeout 90 sudo apt-get update -qq >/dev/null 2>&1 \
+                 && timeout 90 sudo apt-get install -y -qq python3-pip >/dev/null 2>&1 \
+                 && timeout 90 python3 -m pip install --quiet "yamllint==${YAMLLINT_VERSION}"; then
                 INSTALLED=1
               fi
             fi
             if [[ "${INSTALLED}" -eq 0 ]] && command -v sudo >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
-              info "falling back to apt-packaged yamllint (version pin '${YAMLLINT_VERSION}' lost)"
-              if sudo apt-get install -y -qq yamllint >/dev/null 2>&1; then
+              info "falling back to apt-packaged yamllint (version pin '${YAMLLINT_VERSION}' lost; 90s timeout)"
+              if timeout 90 sudo apt-get install -y -qq yamllint >/dev/null 2>&1; then
                 INSTALLED=1
               fi
             fi
@@ -334,21 +341,34 @@ runs:
           if [[ -n "${SH_FILES}" ]]; then
             if ! command -v shellcheck >/dev/null 2>&1; then
               # ubuntu-latest images ship shellcheck preinstalled. Fall back
-              # to apt only if not present (rare).
-              sudo apt-get update -qq
-              sudo apt-get install -y -qq shellcheck >/dev/null
+              # to apt only if not present (rare). Same 90 s ceiling as
+              # the markdownlint/yamllint paths above; mirrored `|| true`
+              # so a hung mirror skips shellcheck with a visible warning
+              # instead of aborting the whole lint composite under
+              # `set -euo pipefail`. The post-install re-check below
+              # converts a failure into a clean degrade.
+              if command -v sudo >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
+                info "shellcheck not found; attempting apt-get install shellcheck (90s timeout)"
+                timeout 90 sudo apt-get update -qq || true
+                timeout 90 sudo apt-get install -y -qq shellcheck >/dev/null 2>&1 || true
+              fi
             fi
-            info "shellcheck: $(shellcheck --version | awk '/^version/ {print $2}')"
-            CNT="${RUNNER_TEMP:-/tmp}/sh-issues.txt"
-            # The shellcheck binary honours .shellcheckrc in cwd automatically.
-            # shellcheck disable=SC2086
-            echo "${SH_FILES}" | xargs -r shellcheck --format=gcc 2>&1 | tee "${CNT}" || true
-            # gcc format: one finding per line, look for ":line:col: severity:"
-            grep -cE ':[0-9]+:[0-9]+: (error|warning|note|info):' "${CNT}" > "${CNT}.count" || true
-            CNT_NUM=$(cat "${CNT}.count" 2>/dev/null || echo 0)
-            : > "${CNT}.lines"
-            for i in $(seq 1 "${CNT_NUM:-0}"); do echo x >> "${CNT}.lines"; done
-            run_linter "shellcheck" "${CNT}.lines" true
+            if command -v shellcheck >/dev/null 2>&1; then
+              info "shellcheck: $(shellcheck --version | awk '/^version/ {print $2}')"
+              CNT="${RUNNER_TEMP:-/tmp}/sh-issues.txt"
+              # The shellcheck binary honours .shellcheckrc in cwd automatically.
+              # shellcheck disable=SC2086
+              echo "${SH_FILES}" | xargs -r shellcheck --format=gcc 2>&1 | tee "${CNT}" || true
+              # gcc format: one finding per line, look for ":line:col: severity:"
+              grep -cE ':[0-9]+:[0-9]+: (error|warning|note|info):' "${CNT}" > "${CNT}.count" || true
+              CNT_NUM=$(cat "${CNT}.count" 2>/dev/null || echo 0)
+              : > "${CNT}.lines"
+              for i in $(seq 1 "${CNT_NUM:-0}"); do echo x >> "${CNT}.lines"; done
+              run_linter "shellcheck" "${CNT}.lines" true
+            else
+              warn "shellcheck could not be installed on this runner (no apt access, or apt fetch exceeded 90 s); skipping. To enable, bake shellcheck into the runner image or add a setup step before this composite."
+              echo "| shellcheck | ⊘ skipped (install failed) | 0 |" >> "${SUMMARY}"
+            fi
           else
             echo "| shellcheck | ⊘ no .sh files | 0 |" >> "${SUMMARY}"
           fi

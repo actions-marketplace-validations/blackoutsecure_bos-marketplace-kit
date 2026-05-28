@@ -157,6 +157,68 @@ def test_bash_steps_clean_under_shellcheck_errors(action_path: Path) -> None:
         )
 
 
+# ---------------------------------------------------------------------------
+# External bash scripts under .github/actions/<name>/*.sh
+#
+# Composites occasionally need to extract their run-block to a sibling .sh
+# file (e.g. the `check` composite's body grew past the GitHub Actions
+# runner-side 21000-char expression limit on `run:` scalars and had to be
+# moved to `.github/actions/check/run.sh`). When that happens the body
+# leaves the inline-bash test net above, so we re-cover it here.
+# ---------------------------------------------------------------------------
+
+EXTERNAL_SH_FILES = sorted(COMPOSITES_DIR.glob("*/*.sh"))
+
+
+def _sh_id(p: Path) -> str:
+    """Pytest test ID = <composite-dir>/<filename>."""
+    return f"{p.parent.name}/{p.name}"
+
+
+@pytest.mark.parametrize(
+    "sh_path",
+    EXTERNAL_SH_FILES,
+    ids=[_sh_id(p) for p in EXTERNAL_SH_FILES],
+)
+def test_external_bash_scripts_parse_via_bash_n(sh_path: Path) -> None:
+    """Every external .sh helper must compile under ``bash -n``."""
+    result = subprocess.run(
+        ["bash", "-n", str(sh_path)], capture_output=True, text=True
+    )
+    assert result.returncode == 0, (
+        f"{sh_path}: bash -n failed:\n{result.stderr}"
+    )
+
+
+@pytest.mark.skipif(
+    shutil.which("shellcheck") is None,
+    reason="shellcheck not installed",
+)
+@pytest.mark.parametrize(
+    "sh_path",
+    EXTERNAL_SH_FILES,
+    ids=[_sh_id(p) for p in EXTERNAL_SH_FILES],
+)
+def test_external_bash_scripts_clean_under_shellcheck_errors(sh_path: Path) -> None:
+    """Every external .sh helper must be clean under ``shellcheck -S error``."""
+    result = subprocess.run(
+        ["shellcheck", "-x", "-S", "error", "--shell=bash", str(sh_path)],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0, (
+        f"{sh_path}: shellcheck error:\n{result.stdout}"
+    )
+
+
+def test_at_least_one_external_bash_script_was_discovered() -> None:
+    """Guard against the glob silently regressing to zero results."""
+    assert len(EXTERNAL_SH_FILES) >= 1, (
+        f"discovered {len(EXTERNAL_SH_FILES)} external .sh helpers under "
+        f"{COMPOSITES_DIR}; expected at least the _lib/lib.sh shared helper "
+        "and check/run.sh."
+    )
+
+
 def test_at_least_one_composite_was_discovered() -> None:
     """Guard against the directory-walk regressing to zero results."""
     # 6 originals + 2 added in the recent feat commit + root manifest.

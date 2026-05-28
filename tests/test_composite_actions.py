@@ -166,6 +166,27 @@ def test_at_least_one_composite_was_discovered() -> None:
     )
 
 
+def test_branch_protection_does_not_preflight_for_gh() -> None:
+    """Regression test for workflow run 26483123210 (Jun 2026):
+    the branch-protection composite previously asserted that the
+    ``gh`` CLI was on PATH but actually talked to api.github.com via
+    ``curl`` -- the ``gh`` preflight was vestigial. That dead check
+    rejected lean self-hosted runner images that don't preinstall
+    the ``gh`` CLI (the docker-github-runner image is intentionally
+    minimal: ``curl`` + ``jq`` + ``git`` + ``python3`` + ``bash``
+    only, no ``gh``). Don't reintroduce the preflight without also
+    adding a real ``gh`` invocation or a graceful install/skip.
+    """
+    path = COMPOSITES_DIR / "branch-protection" / "action.yml"
+    text = path.read_text(encoding="utf-8")
+    assert "command -v gh" not in text, (
+        f"{path}: vestigial `command -v gh` preflight detected. "
+        "The composite uses `curl` directly for every GitHub API "
+        "request -- adding a `gh` preflight rejects lean self-hosted "
+        "runner images that lack the `gh` CLI for no real reason."
+    )
+
+
 def test_root_action_wires_every_input_to_a_composite() -> None:
     """The root `action.yml` is a thin router: every input it declares
     should appear in at least one ``with:`` block in its steps."""

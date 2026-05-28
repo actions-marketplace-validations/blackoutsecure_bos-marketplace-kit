@@ -25,18 +25,94 @@ def _fallback_parse(path: str) -> dict:
 
     Captures only the keys this check inspects. Sufficient for
     detecting empty/missing values; not a YAML implementation.
+
+    Block scalars (`>`, `>-`, `|`, `|-`) ARE understood — without
+    that, an action.yml whose top-level ``description: >-`` spans
+    multiple lines would have ``>-`` captured as the literal value
+    (DESC_LEN=2 instead of the real character count), spuriously
+    tripping MP003 / OP003.
     """
     doc: dict[str, object] = {}
     cur_section: dict | None = None
     cur_key: str | None = None
 
+    # Block-scalar accumulator state. When a ``key: >-`` (or `|`, etc.)
+    # is seen at the top level, we collect subsequent indented lines
+    # until the indentation drops back to column 0 (a new top-level
+    # key) or EOF.
+    block_target: tuple[str, str] | None = None  # (key, style)
+    block_lines: list[str] = []
+
+    def _flush_block() -> None:
+        nonlocal block_target, block_lines
+        if block_target is None:
+            return
+        key, style = block_target
+        # Strip the common leading indentation so we keep relative
+        # formatting (matches PyYAML's behaviour for plain block
+        # scalars with no explicit indentation indicator).
+        stripped = [ln.lstrip() for ln in block_lines]
+        if style.startswith(">"):
+            # Folded scalar: join non-empty lines with single spaces;
+            # blank lines become a single newline (paragraph break).
+            joined_parts: list[str] = []
+            buf: list[str] = []
+            for ln in stripped:
+                if ln == "":
+                    if buf:
+                        joined_parts.append(" ".join(buf))
+                        buf = []
+                    joined_parts.append("")
+                else:
+                    buf.append(ln)
+            if buf:
+                joined_parts.append(" ".join(buf))
+            value = "\n".join(joined_parts)
+        else:  # literal `|`
+            value = "\n".join(stripped)
+        # Chomping indicators: `-` strips trailing newlines; `+`
+        # keeps all (rare); default keeps one trailing newline.
+        if style.endswith("-"):
+            value = value.rstrip("\n")
+        doc[key] = value
+        block_target = None
+        block_lines = []
+
     with open(path, encoding="utf-8") as f:
         for raw in f:
             line = raw.rstrip("\n")
+
+            # If we're inside a block scalar, decide whether this line
+            # belongs to its body or terminates it.
+            if block_target is not None:
+                if line.strip() == "":
+                    block_lines.append("")
+                    continue
+                # A line that starts at column 0 (no leading
+                # whitespace) is a new top-level mapping key — flush
+                # and fall through to normal processing.
+                if not line.startswith((" ", "\t")):
+                    _flush_block()
+                else:
+                    block_lines.append(line)
+                    continue
+
             top = re.match(r"^([a-zA-Z_][a-zA-Z0-9_-]*):\s*(.*)$", line)
             if top:
                 cur_key = top.group(1)
-                val = top.group(2).strip().strip("'\"")
+                rhs = top.group(2)
+                # Detect block-scalar indicators on the right-hand
+                # side. The full grammar allows an explicit
+                # indentation indicator (``>2``, ``|4``) — we accept
+                # but ignore that digit.
+                m_block = re.match(r"^([>|])([0-9]*)([+-]?)\s*(?:#.*)?$", rhs)
+                if m_block:
+                    style = m_block.group(1) + (m_block.group(3) or "")
+                    block_target = (cur_key, style)
+                    block_lines = []
+                    cur_section = None
+                    continue
+                val = rhs.strip().strip("'\"")
                 if val:
                     doc[cur_key] = val
                     cur_section = None
@@ -47,6 +123,8 @@ def _fallback_parse(path: str) -> dict:
             sub = re.match(r"^\s+([a-zA-Z_][a-zA-Z0-9_-]*):\s*(.*)$", line)
             if sub and isinstance(cur_section, dict):
                 cur_section[sub.group(1)] = sub.group(2).strip().strip("'\"")
+    # End of file — flush any open block scalar.
+    _flush_block()
     return doc
 
 

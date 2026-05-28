@@ -834,37 +834,37 @@ runs:
         # syntax around `inputs.foo` or `github.event.*`) inside a
         # composite `run:` body is a shell-injection surface. Inputs
         # should be plumbed via `env:` so the runner quotes them.
+        #
+        # The previous implementation used an awk one-liner that
+        # latched `inrun=1` on the first `run:` and never reset, so
+        # SAFE `${{ inputs.* }}` references inside the `env:` blocks
+        # of LATER steps were flagged as violations. The Python helper
+        # tracks the `run:` mapping-key indentation and only scans
+        # lines that are structurally inside a `run:` body, eliminating
+        # the false positives. See scan_sc001.py for full background.
         UNSAFE_INTERP=""
         SCAN_DIRS=""
         [ -d actions ] && SCAN_DIRS="${SCAN_DIRS} actions"
         [ -d .github/actions ] && SCAN_DIRS="${SCAN_DIRS} .github/actions"
         if [ -n "${SCAN_DIRS}" ]; then
-          # Build the awk regex via shell concatenation so the literal
-          # dollar-double-brace sequence never appears in THIS YAML
-          # source (the Actions template engine eagerly scans `run:`
-          # bodies for expressions even inside bash comments / strings).
-          # `$( printf '%s' '$' )` defeats that without changing the
-          # resulting awk pattern.
-          DOLLAR="$(printf '%s' '$')"
-          OPEN_EXPR="${DOLLAR}{{"
-          PAT="\\${OPEN_EXPR}[[:space:]]*(inputs|github\\.event)"
+          # Collect every action.yml/action.yaml under the scan dirs.
+          ACTION_FILES=""
           # shellcheck disable=SC2086
           while IFS= read -r f; do
             [ -z "${f}" ] && continue
-            if grep -qE '^[[:space:]]*using:[[:space:]]*composite' "${f}"; then
-              # Hit if any expression-form `inputs.*` / `github.event.*`
-              # appears after the first `run:` line in the file.
-              if awk -v pat="${PAT}" '
-                /^[[:space:]]*run:/ { inrun=1 }
-                inrun && $0 ~ pat { print FILENAME; exit }
-              ' "${f}" | grep -q .; then
-                UNSAFE_INTERP="${UNSAFE_INTERP}${f}\n"
-              fi
-            fi
+            ACTION_FILES="${ACTION_FILES} ${f}"
           done < <(find ${SCAN_DIRS} -maxdepth 3 -type f \( -name 'action.yml' -o -name 'action.yaml' \) 2>/dev/null)
+          if [ -n "${ACTION_FILES}" ]; then
+            # shellcheck disable=SC2086
+            UNSAFE_INTERP="$(python3 "${GITHUB_ACTION_PATH}/scan_sc001.py" ${ACTION_FILES} || true)"
+          fi
         fi
         if [ -n "${UNSAFE_INTERP}" ]; then
-          record SC001 fail "$(printf 'composite action(s) interpolate `inputs.*` or `github.event.*` directly inside `run:` (shell injection surface — plumb via `env:` instead):\n%b' "${UNSAFE_INTERP}" | tr '\n' ' ')"
+          # Render the path list on one line (Markdown renders the join
+          # cleanly in step summaries).
+          # shellcheck disable=SC2001
+          UNSAFE_LIST="$(printf '%s' "${UNSAFE_INTERP}" | tr '\n' ' ' | sed 's/[[:space:]]\{1,\}/ /g' | sed 's/^ //;s/ $//')"
+          record SC001 fail "composite action(s) interpolate \`inputs.*\` or \`github.event.*\` directly inside \`run:\` (shell injection surface — plumb via \`env:\` instead): ${UNSAFE_LIST}"
         else
           record SC001 pass "no expression-form inputs.* / github.event.* interpolation in composite run blocks"
         fi

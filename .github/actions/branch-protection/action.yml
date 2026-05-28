@@ -249,8 +249,15 @@ runs:
           *) die "invalid severity='${BP_SEVERITY}'; expected fail|warn|skip" ;;
         esac
         [[ -n "${GH_TOKEN}" ]] || die "github_token is required"
-        command -v gh >/dev/null 2>&1 || die "gh CLI not on PATH (preinstalled on GitHub-hosted runners)"
-        command -v jq >/dev/null 2>&1 || die "jq not on PATH"
+        # NOTE: this composite talks to the GitHub REST API via `curl`
+        # (see GET on line ~304 and PUT on line ~365). It does NOT
+        # shell out to `gh` anywhere -- the earlier preflight for `gh`
+        # was a vestige from a previous implementation and was rejecting
+        # lean self-hosted runner images that don't preinstall the
+        # `gh` CLI. Removed deliberately; do not reintroduce without
+        # also adding a real `gh` invocation OR a graceful install.
+        command -v curl >/dev/null 2>&1 || die "curl not on PATH (required to call api.github.com)"
+        command -v jq   >/dev/null 2>&1 || die "jq not on PATH (required to normalise the status-check list)"
 
         if [[ "${BP_SEVERITY}" == "skip" && "${BP_MODE}" == "check" ]]; then
           info "branch-protection skipped (severity=skip in check mode)"

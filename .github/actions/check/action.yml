@@ -49,10 +49,36 @@ inputs:
     default: 'v1.7.7'
   actionlint_sha256:
     description: >-
-      SHA-256 of the linux_amd64 tarball for `actionlint_version`.
-      Validated against the downloaded blob.
+      SHA-256 of the `linux_amd64` tarball for `actionlint_version`.
+      Validated against the downloaded blob when the runner is x86_64.
+      Defaults pinned for `v1.7.7`. Override in lockstep with
+      `actionlint_version` when bumping.
     required: false
     default: '023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757'
+  actionlint_sha256_arm64:
+    description: >-
+      SHA-256 of the `linux_arm64` tarball for `actionlint_version`.
+      Validated when the runner reports `aarch64`/`arm64`. Required
+      for self-hosted ARM64 runners (e.g. Raspberry Pi 4/5, Apple
+      silicon, GitHub-hosted `*-arm` runners). Defaults pinned for
+      `v1.7.7`.
+    required: false
+    default: '401942f9c24ed71e4fe71b76c7d638f66d8633575c4016efd2977ce7c28317d0'
+  actionlint_sha256_armv6:
+    description: >-
+      SHA-256 of the `linux_armv6` tarball for `actionlint_version`.
+      Validated when the runner reports `armv6l` or `armv7l`
+      (actionlint does not ship a separate armv7 build — armv6 is
+      forward-compatible to armv7). Defaults pinned for `v1.7.7`.
+    required: false
+    default: '82e98d7252341b83fa557764824f225fa50431801b8e3d8e99f70dc1efc317b2'
+  actionlint_sha256_386:
+    description: >-
+      SHA-256 of the `linux_386` tarball for `actionlint_version`.
+      Validated when the runner reports `i386`/`i686`. Defaults pinned
+      for `v1.7.7`.
+    required: false
+    default: '01d4c173f411aeecf670d5219c008e07bf11539cf1181fdeee0cdb0eb8244aac'
   workflow_dir:
     description: >-
       Directory of workflow files to lint with actionlint, if any
@@ -299,23 +325,68 @@ runs:
     - id: install
       shell: bash
       env:
-        AL_VERSION: ${{ inputs.actionlint_version }}
-        AL_SHA256:  ${{ inputs.actionlint_sha256 }}
+        AL_VERSION:        ${{ inputs.actionlint_version }}
+        AL_SHA256_AMD64:   ${{ inputs.actionlint_sha256 }}
+        AL_SHA256_ARM64:   ${{ inputs.actionlint_sha256_arm64 }}
+        AL_SHA256_ARMV6:   ${{ inputs.actionlint_sha256_armv6 }}
+        AL_SHA256_386:     ${{ inputs.actionlint_sha256_386 }}
       run: |
         set -euo pipefail
         # Install actionlint into a scratch dir on PATH for this job.
         AL_DIR="${RUNNER_TEMP:-/tmp}/marketplace-kit-actionlint"
         mkdir -p "${AL_DIR}"
 
+        # Detect runner arch and map to actionlint's release-asset
+        # naming. The previous implementation hard-coded `linux_amd64`,
+        # which silently downloaded the wrong-arch tarball on ARM
+        # self-hosted runners -- SHA verification passed (we were
+        # checking the amd64 SHA against an amd64 tarball), then the
+        # binary failed at exec time with the cryptic
+        #   `cannot execute binary file: Exec format error`
+        # We now select the asset + per-arch SHA based on `uname -m`.
+        UNAME_M="$(uname -m)"
+        case "${UNAME_M}" in
+          x86_64|amd64)
+            AL_ASSET='linux_amd64'
+            AL_SHA256="${AL_SHA256_AMD64}"
+            ;;
+          aarch64|arm64)
+            AL_ASSET='linux_arm64'
+            AL_SHA256="${AL_SHA256_ARM64}"
+            ;;
+          armv7l|armv6l)
+            # actionlint v1.7.7 only ships armv6 (no separate armv7) --
+            # armv6 binaries are forward-compatible to armv7 hardware.
+            AL_ASSET='linux_armv6'
+            AL_SHA256="${AL_SHA256_ARMV6}"
+            ;;
+          i386|i686)
+            AL_ASSET='linux_386'
+            AL_SHA256="${AL_SHA256_386}"
+            ;;
+          *)
+            echo "::error::unsupported runner architecture '${UNAME_M}'; actionlint provides linux_{amd64,arm64,armv6,386} only" >&2
+            exit 1
+            ;;
+        esac
+
         # Strip leading 'v' for the tarball filename.
         VER="${AL_VERSION#v}"
-        URL="https://github.com/rhysd/actionlint/releases/download/${AL_VERSION}/actionlint_${VER}_linux_amd64.tar.gz"
+        URL="https://github.com/rhysd/actionlint/releases/download/${AL_VERSION}/actionlint_${VER}_${AL_ASSET}.tar.gz"
         TARBALL="${AL_DIR}/actionlint.tar.gz"
 
         echo "Downloading ${URL}..."
         curl -fsSL --retry 3 --retry-delay 2 -o "${TARBALL}" "${URL}"
 
-        echo "${AL_SHA256}  ${TARBALL}" | sha256sum -c -
+        if [[ -n "${AL_SHA256}" ]]; then
+          echo "${AL_SHA256}  ${TARBALL}" | sha256sum -c -
+        else
+          # Empty SHA for a non-amd64 arch means the caller overrode
+          # the version but didn't supply the matching per-arch SHA.
+          # Refuse to silently skip verification.
+          echo "::error::actionlint_sha256_<arch> for '${UNAME_M}' (-> ${AL_ASSET}) is empty; refusing to install unverified binary. Supply the SHA-256 of actionlint_${VER}_${AL_ASSET}.tar.gz via the matching input." >&2
+          exit 1
+        fi
 
         tar -C "${AL_DIR}" -xzf "${TARBALL}" actionlint
         chmod +x "${AL_DIR}/actionlint"

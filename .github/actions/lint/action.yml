@@ -239,13 +239,23 @@ runs:
               echo "| markdownlint | ⊘ skipped (npm unavailable) | 0 |" >> "${SUMMARY}"
             else
               info "markdownlint-cli2: ${MDLINT_VERSION}"
-              npm install --silent --no-save \
+              # Install into RUNNER_TEMP -- NOT the repo root -- so that
+              # the dependency tree's own bundled `*.md` files (e.g.
+              # `node_modules/@nodelib/fs.scandir/README.md`) don't get
+              # swept up by the default `**/*.md` glob in the next step.
+              # Symptom of the old behaviour was a 1562-finding report
+              # where every line was inside `node_modules/`, masking any
+              # real findings in the user's tree.
+              MD_TMP="${RUNNER_TEMP:-/tmp}/marketplace-kit-markdownlint"
+              mkdir -p "${MD_TMP}"
+              npm install --silent --no-save --prefix "${MD_TMP}" \
                 "markdownlint-cli2@${MDLINT_VERSION}" \
                 >/dev/null
+              MD_BIN="${MD_TMP}/node_modules/.bin/markdownlint-cli2"
               CNT="${RUNNER_TEMP:-/tmp}/md-issues.txt"
               # markdownlint-cli2 reads .markdownlint.yaml automatically.
               # shellcheck disable=SC2086
-              npx --no-install markdownlint-cli2 ${PATHS_MD} 2>&1 | tee "${CNT}" || true
+              "${MD_BIN}" ${PATHS_MD} 2>&1 | tee "${CNT}" || true
               # The presence of any "MD###" code in output indicates findings.
               grep -cE '(^|: )MD[0-9]{3}' "${CNT}" > "${CNT}.count" || true
               CNT_NUM=$(cat "${CNT}.count" 2>/dev/null || echo 0)
@@ -265,17 +275,52 @@ runs:
           YAML_FILES=$(expand_globs "${PATHS_YAML}")
           if [[ -n "${YAML_FILES}" ]]; then
             info "yamllint: ${YAMLLINT_VERSION}"
-            python3 -m pip install --quiet "yamllint==${YAMLLINT_VERSION}"
-            CNT="${RUNNER_TEMP:-/tmp}/yaml-issues.txt"
-            # If .yamllint.yml exists it's auto-discovered; otherwise
-            # yamllint falls back to its built-in default config.
-            yamllint -f github . 2>&1 | tee "${CNT}" || true
-            # yamllint -f github emits "::warning" / "::error" per finding.
-            grep -cE '^::(warning|error)' "${CNT}" > "${CNT}.count" || true
-            CNT_NUM=$(cat "${CNT}.count" 2>/dev/null || echo 0)
-            : > "${CNT}.lines"
-            for i in $(seq 1 "${CNT_NUM:-0}"); do echo x >> "${CNT}.lines"; done
-            run_linter "yamllint" "${CNT}.lines" true
+            # Lean self-hosted runner images (e.g. our balena-based
+            # docker-github-runner) ship `python3` without `pip` to keep
+            # the image small. The old `python3 -m pip install` line
+            # then died with `No module named pip` and aborted the job
+            # under `set -euo pipefail`. Probe each install path in
+            # decreasing fidelity (preserve the version pin if we can,
+            # else fall back to whatever yamllint apt ships, else skip
+            # gracefully with a visible summary row).
+            INSTALLED=0
+            if command -v yamllint >/dev/null 2>&1; then
+              INSTALLED=1
+            fi
+            if [[ "${INSTALLED}" -eq 0 ]] && python3 -m pip --version >/dev/null 2>&1; then
+              if python3 -m pip install --quiet "yamllint==${YAMLLINT_VERSION}"; then
+                INSTALLED=1
+              fi
+            fi
+            if [[ "${INSTALLED}" -eq 0 ]] && command -v sudo >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
+              info "pip unavailable; attempting to install python3-pip then retry pip install"
+              if sudo apt-get update -qq >/dev/null 2>&1 \
+                 && sudo apt-get install -y -qq python3-pip >/dev/null 2>&1 \
+                 && python3 -m pip install --quiet "yamllint==${YAMLLINT_VERSION}"; then
+                INSTALLED=1
+              fi
+            fi
+            if [[ "${INSTALLED}" -eq 0 ]] && command -v sudo >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
+              info "falling back to apt-packaged yamllint (version pin '${YAMLLINT_VERSION}' lost)"
+              if sudo apt-get install -y -qq yamllint >/dev/null 2>&1; then
+                INSTALLED=1
+              fi
+            fi
+            if [[ "${INSTALLED}" -eq 0 ]]; then
+              warn "yamllint could not be installed on this runner (no pip module, no apt access, and yamllint not preinstalled); skipping yamllint. To enable, install python3-pip OR yamllint on the runner image, OR add 'uses: actions/setup-python@v5' to the job before this composite."
+              echo "| yamllint | ⊘ skipped (install failed) | 0 |" >> "${SUMMARY}"
+            else
+              CNT="${RUNNER_TEMP:-/tmp}/yaml-issues.txt"
+              # If .yamllint.yml exists it's auto-discovered; otherwise
+              # yamllint falls back to its built-in default config.
+              yamllint -f github . 2>&1 | tee "${CNT}" || true
+              # yamllint -f github emits "::warning" / "::error" per finding.
+              grep -cE '^::(warning|error)' "${CNT}" > "${CNT}.count" || true
+              CNT_NUM=$(cat "${CNT}.count" 2>/dev/null || echo 0)
+              : > "${CNT}.lines"
+              for i in $(seq 1 "${CNT_NUM:-0}"); do echo x >> "${CNT}.lines"; done
+              run_linter "yamllint" "${CNT}.lines" true
+            fi
           else
             echo "| yamllint | ⊘ no .yml files | 0 |" >> "${SUMMARY}"
           fi

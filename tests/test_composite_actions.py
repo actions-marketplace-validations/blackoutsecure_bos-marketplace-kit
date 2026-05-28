@@ -203,3 +203,116 @@ def test_root_action_wires_every_input_to_a_composite() -> None:
     assert not missing, (
         f"root action.yml declares {sorted(missing)} but never references them"
     )
+
+
+def test_check_actionlint_download_is_arch_aware() -> None:
+    """Regression test for workflow run 26553990574 (Jun 2026):
+    the check composite's actionlint installer previously hard-coded
+    ``linux_amd64`` in the download URL. On ARM self-hosted runners
+    (e.g. a Raspberry Pi or any ``ubuntu-*-arm`` runner) this
+    silently downloaded the x86_64 tarball, passed SHA verification
+    (we were checking the amd64 SHA against the amd64 tarball), then
+    died at exec time with::
+
+        actionlint: cannot execute binary file: Exec format error
+
+    The fix is to detect the runner architecture with ``uname -m``
+    and pick the matching actionlint release asset
+    (``linux_amd64``/``linux_arm64``/``linux_armv6``/``linux_386``).
+    Don't reintroduce the amd64-only hard-code.
+    """
+    path = COMPOSITES_DIR / "check" / "action.yml"
+    text = path.read_text(encoding="utf-8")
+    # Must perform some form of arch detection.
+    assert "uname -m" in text, (
+        f"{path}: actionlint installer must detect runner arch via "
+        "`uname -m` before building the download URL. The previous "
+        "amd64-only hard-code broke every non-x86_64 self-hosted runner."
+    )
+    # The URL must NOT hard-code linux_amd64 as the only choice.
+    # We allow the literal ``linux_amd64`` to appear inside a `case`
+    # arm or a comment, so check specifically for the old URL shape.
+    assert "_linux_amd64.tar.gz" not in text, (
+        f"{path}: actionlint download URL still contains the literal "
+        "`_linux_amd64.tar.gz`. Use a per-arch asset name selected from "
+        "`uname -m` instead."
+    )
+
+
+def test_lint_markdownlint_installs_outside_repo_root() -> None:
+    """Regression test for workflow run 26553990574 (Jun 2026):
+    the lint composite previously ran ``npm install
+    markdownlint-cli2`` from the current working directory (the repo
+    root). That created ``./node_modules/`` populated with every
+    transitive dependency's ``README.md``, and the next step's
+    default ``**/*.md`` glob then swept all of them up -- producing
+    a 1562-finding report where every line lived in ``node_modules/``
+    and masking any real findings in the user's tree.
+
+    The fix is to install into ``RUNNER_TEMP`` with ``npm install
+    --prefix "${MD_TMP}"`` and invoke the binary as
+    ``"${MD_TMP}/node_modules/.bin/markdownlint-cli2"``. Don't
+    reintroduce the cwd install.
+    """
+    path = COMPOSITES_DIR / "lint" / "action.yml"
+    text = path.read_text(encoding="utf-8")
+    # The npm install line must scope its install dir via --prefix
+    # (any value -- the important thing is that it isn't cwd).
+    assert "npm install" in text, f"{path}: lint composite no longer invokes npm install"
+    # Look at every line that contains an npm install invocation.
+    npm_install_lines = [
+        line for line in text.splitlines()
+        if "npm install" in line and not line.lstrip().startswith("#")
+    ]
+    assert npm_install_lines, f"{path}: no non-comment `npm install` line found"
+    for line in npm_install_lines:
+        assert "--prefix" in line or "\\" in line, (
+            f"{path}: bare `npm install` from cwd detected: {line!r}. "
+            "This installs dependencies into ./node_modules/ in the repo "
+            "root, polluting the working tree and causing default `**/*.md` "
+            "globs to scoop up hundreds of dependency README files."
+        )
+    # Defense in depth: the install dir name from the fix should appear.
+    assert "marketplace-kit-markdownlint" in text, (
+        f"{path}: expected the markdownlint install to land in "
+        "`${RUNNER_TEMP}/marketplace-kit-markdownlint/`. If you renamed "
+        "the scratch dir, update this assertion too."
+    )
+
+
+def test_lint_yamllint_has_pip_missing_fallback() -> None:
+    """Regression test for workflow run 26553990574 (Jun 2026):
+    the lint composite previously ran ``python3 -m pip install
+    yamllint==...`` unconditionally. Lean self-hosted runner images
+    (e.g. our docker-github-runner) ship ``python3`` without ``pip``
+    to keep the image small, so this aborted the job with::
+
+        /usr/bin/python3: No module named pip
+        Error: Process completed with exit code 1.
+
+    The fix is to probe for an already-installed yamllint binary
+    first, then try pip if available, then apt-get install
+    python3-pip + retry, then apt-get install yamllint as a final
+    fallback, and finally skip-with-warning if every path fails.
+    Don't reintroduce the bare ``python3 -m pip install`` that
+    crashes on lean runners.
+    """
+    path = COMPOSITES_DIR / "lint" / "action.yml"
+    text = path.read_text(encoding="utf-8")
+    # The yamllint block must probe pip's presence before invoking it.
+    assert "python3 -m pip --version" in text, (
+        f"{path}: yamllint install must probe `python3 -m pip --version` "
+        "before invoking pip. Lean runner images ship python3 without pip; "
+        "the bare invocation aborts the job under `set -euo pipefail`."
+    )
+    # And must check for an existing binary first (cheapest path).
+    assert "command -v yamllint" in text, (
+        f"{path}: yamllint install path must first check `command -v yamllint` "
+        "to avoid re-installing on runners that already ship it."
+    )
+    # And must have the skip-with-warning escape hatch.
+    assert "yamllint | ⊘ skipped (install failed)" in text, (
+        f"{path}: yamllint install path must emit a visible skip row "
+        "(`yamllint | ⊘ skipped (install failed)`) when every install "
+        "fallback fails, so the job summary makes the skip discoverable."
+    )

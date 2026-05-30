@@ -386,10 +386,12 @@ runs:
             if command -v shellcheck >/dev/null 2>&1; then
               info "shellcheck: $(shellcheck --version | awk '/^version/ {print $2}')"
               CNT="${RUNNER_TEMP:-/tmp}/sh-issues.txt"
-              # shellcheck auto-discovers .shellcheckrc in each file's
-              # directory and any parent. When the consumer repo does
-              # NOT ship one at the repo root, we point shellcheck at
-              # the packaged default via --rcfile so consumers get
+              # "Note:" prefix avoids shellcheck parsing the comment
+              # below as a malformed directive (SC1072/SC1073).
+              # Note: shellcheck auto-discovers .shellcheckrc in each
+              # file's directory and any parent. When the consumer repo
+              # does NOT ship one at the repo root, we point shellcheck
+              # at the packaged default via --rcfile so consumers get
               # sensible defaults out of the box (drop a .shellcheckrc
               # at the consumer repo root to override — the auto-search
               # finds it before we ever set --rcfile, but for clarity

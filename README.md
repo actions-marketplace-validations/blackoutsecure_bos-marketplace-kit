@@ -479,8 +479,31 @@ demand with pinned versions (markdownlint-cli2 `0.18.1`, yamllint
 `1.37.0`, actionlint `v1.7.7`; shellcheck is preinstalled on
 `ubuntu-latest`), and emits a markdown table to the job summary.
 
-Need configs? `marketplace-kit generate-policy markdownlint`,
-`yamllint`, or `shellcheckrc`.
+**Configs — packaged defaults with per-repo override.** The composite
+ships sensible default configs for `markdownlint-cli2`, `yamllint`,
+and `shellcheck` inside the action under
+[`.github/actions/lint/configs/`](.github/actions/lint/configs/). They
+are tuned for GitHub Actions YAML, documentation-heavy READMEs, and
+composite-action shell snippets. Consumers get them automatically with
+zero setup. To override, drop the corresponding file at the consumer
+repo root and each linter's normal auto-discovery (which takes
+precedence over the packaged fallback) picks it up:
+
+| Linter             | Repo-root override                                     |
+| ------------------ | ------------------------------------------------------ |
+| `markdownlint-cli2`| `.markdownlint.{yaml,yml,jsonc,json,cjs}`              |
+| `yamllint`         | `.yamllint` / `.yamllint.yml` / `.yamllint.yaml`       |
+| `shellcheck`       | `.shellcheckrc`                                        |
+
+The fallback fires only when no repo-local file is present, so a
+consumer that wants stricter or looser rules (e.g. `line-length: 250`
+for KQL-heavy workflows) keeps full control by shipping its own
+config — same escape hatch as every other lint composite in the
+ecosystem.
+
+`marketplace-kit generate-policy markdownlint`, `yamllint`, or
+`shellcheckrc` still emits a starter file if you want to scaffold an
+override.
 
 ### Branch-protection compliance (`branch-protection`)
 

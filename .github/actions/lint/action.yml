@@ -15,9 +15,19 @@ description: >-
 
   All four are install-on-demand into ephemeral cache locations on the
   runner — no global package installs, no caller setup actions needed.
-  When a config file for a given linter is absent, that linter still
-  runs with its built-in defaults (consistent with the kit's policy
-  that lint configs are recommended, not required).
+  When a consumer repo does NOT ship its own lint config file, the
+  composite falls back to a packaged default config bundled inside the
+  action under `configs/` (one per linter). To override the packaged
+  default, drop the corresponding file at the consumer repo root —
+  each linter's normal auto-discovery takes precedence over the
+  packaged fallback:
+
+    * `.markdownlint.{yaml,yml,jsonc,json,cjs}` for markdownlint-cli2
+    * `.yamllint` / `.yamllint.yml` / `.yamllint.yaml` for yamllint
+    * `.shellcheckrc`                            for shellcheck
+
+  This keeps the kit's contract of "zero caller setup" while ensuring
+  consumers get sensible defaults out of the box.
 
   Each linter is independently gated by an input so consumers can
   disable any one of them without forking. The composite never auto-
@@ -260,9 +270,20 @@ runs:
                 >/dev/null
               MD_BIN="${MD_TMP}/node_modules/.bin/markdownlint-cli2"
               CNT="${RUNNER_TEMP:-/tmp}/md-issues.txt"
-              # markdownlint-cli2 reads .markdownlint.yaml automatically.
+              # markdownlint-cli2 auto-discovers .markdownlint.{yaml,yml,
+              # jsonc,json,cjs} at the repo root. When none is present
+              # we explicitly point at the packaged default shipped
+              # inside this action so consumers get sensible defaults
+              # out of the box (override by dropping any of the above).
+              MD_EXTRA_ARGS=()
+              if ! ls -1 .markdownlint.yaml .markdownlint.yml \
+                       .markdownlint.jsonc .markdownlint.json \
+                       .markdownlint.cjs 2>/dev/null | grep -q .; then
+                MD_EXTRA_ARGS+=( --config "${GITHUB_ACTION_PATH}/configs/markdownlint.yaml" )
+                info "markdownlint: using packaged default config (no repo-local .markdownlint.* found)"
+              fi
               # shellcheck disable=SC2086
-              "${MD_BIN}" ${PATHS_MD} 2>&1 | tee "${CNT}" || true
+              "${MD_BIN}" "${MD_EXTRA_ARGS[@]}" ${PATHS_MD} 2>&1 | tee "${CNT}" || true
               # The presence of any "MD###" code in output indicates findings.
               grep -cE '(^|: )MD[0-9]{3}' "${CNT}" > "${CNT}.count" || true
               CNT_NUM=$(cat "${CNT}.count" 2>/dev/null || echo 0)
@@ -318,9 +339,18 @@ runs:
               echo "| yamllint | ⊘ skipped (install failed) | 0 |" >> "${SUMMARY}"
             else
               CNT="${RUNNER_TEMP:-/tmp}/yaml-issues.txt"
-              # If .yamllint.yml exists it's auto-discovered; otherwise
-              # yamllint falls back to its built-in default config.
-              yamllint -f github . 2>&1 | tee "${CNT}" || true
+              # yamllint auto-discovers .yamllint / .yamllint.yml /
+              # .yamllint.yaml at the repo root. When none is present
+              # we explicitly point at the packaged default shipped
+              # inside this action so consumers get sensible defaults
+              # out of the box (override by dropping any of the above).
+              YAML_CFG_ARGS=()
+              if ! ls -1 .yamllint .yamllint.yml .yamllint.yaml \
+                   2>/dev/null | grep -q .; then
+                YAML_CFG_ARGS+=( -c "${GITHUB_ACTION_PATH}/configs/yamllint.yml" )
+                info "yamllint: using packaged default config (no repo-local .yamllint* found)"
+              fi
+              yamllint "${YAML_CFG_ARGS[@]}" -f github . 2>&1 | tee "${CNT}" || true
               # yamllint -f github emits "::warning" / "::error" per finding.
               grep -cE '^::(warning|error)' "${CNT}" > "${CNT}.count" || true
               CNT_NUM=$(cat "${CNT}.count" 2>/dev/null || echo 0)
@@ -356,9 +386,21 @@ runs:
             if command -v shellcheck >/dev/null 2>&1; then
               info "shellcheck: $(shellcheck --version | awk '/^version/ {print $2}')"
               CNT="${RUNNER_TEMP:-/tmp}/sh-issues.txt"
-              # The shellcheck binary honours .shellcheckrc in cwd automatically.
+              # shellcheck auto-discovers .shellcheckrc in each file's
+              # directory and any parent. When the consumer repo does
+              # NOT ship one at the repo root, we point shellcheck at
+              # the packaged default via --rcfile so consumers get
+              # sensible defaults out of the box (drop a .shellcheckrc
+              # at the consumer repo root to override — the auto-search
+              # finds it before we ever set --rcfile, but for clarity
+              # we only pass --rcfile when no repo-local file exists).
+              SH_RC_ARGS=()
+              if [[ ! -f .shellcheckrc ]]; then
+                SH_RC_ARGS+=( --rcfile="${GITHUB_ACTION_PATH}/configs/shellcheckrc" )
+                info "shellcheck: using packaged default config (no repo-local .shellcheckrc found)"
+              fi
               # shellcheck disable=SC2086
-              echo "${SH_FILES}" | xargs -r shellcheck --format=gcc 2>&1 | tee "${CNT}" || true
+              echo "${SH_FILES}" | xargs -r shellcheck "${SH_RC_ARGS[@]}" --format=gcc 2>&1 | tee "${CNT}" || true
               # gcc format: one finding per line, look for ":line:col: severity:"
               grep -cE ':[0-9]+:[0-9]+: (error|warning|note|info):' "${CNT}" > "${CNT}.count" || true
               CNT_NUM=$(cat "${CNT}.count" 2>/dev/null || echo 0)

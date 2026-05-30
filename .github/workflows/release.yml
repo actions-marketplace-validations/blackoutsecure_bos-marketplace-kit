@@ -997,8 +997,10 @@ jobs:
           #   by promote — no editing, merging, building, or in-tree
           #   linting happens against it, so shipping them creates the
           #   illusion of an editable branch where there isn't one.
-          #   Consumers of the `lint` composite read configs from their
-          #   own repo, not from the kit's bundled copy.
+          #   The consumer-facing default lint configs live INSIDE the
+          #   `lint` composite at `.github/actions/lint/configs/` (a
+          #   path already covered by `allowlist_paths` below) and are
+          #   promoted to main alongside the action itself.
           allowlist_paths: |
             action.yml
             LICENSE

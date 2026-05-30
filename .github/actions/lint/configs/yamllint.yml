@@ -1,0 +1,60 @@
+# Packaged default yamllint config shipped with the bos-marketplace-kit
+# `lint` composite action. Used automatically when the consumer repo
+# does NOT define its own `.yamllint`, `.yamllint.yml`, or
+# `.yamllint.yaml` at the repo root. To override, drop any of those
+# files in the consumer repo root and yamllint's normal auto-discovery
+# (which takes precedence over `-c`) will pick them up.
+#
+# Tuned for GitHub Actions YAML which uses:
+#   * Long inline expressions (${{ ... }}) — line-length relaxed.
+#   * The `on:` key which yamllint reads as a truthy alias — relaxed.
+#   * Both flow- and block-style mappings — relaxed.
+#   * Column-aligned `with:` / `env:` blocks (deliberate readability
+#     convention) — `colons.max-spaces-after` relaxed.
+
+extends: default
+
+ignore: |
+  .git/
+  .venv/
+  node_modules/
+  dist/
+
+rules:
+  # GitHub Actions expressions and shell commands routinely exceed 120
+  # cols (e.g. `${{ fromJson(needs.x.outputs.y).foo.bar || 'default' }}`).
+  line-length:
+    max: 200
+    level: warning
+
+  # GitHub workflows legitimately use the key `on:` which yamllint
+  # interprets as a truthy alias. Relax to a warning so it doesn't fail.
+  truthy:
+    allowed-values: ['true', 'false', 'on', 'off', 'yes', 'no']
+    check-keys: false
+
+  # Permit either flow- or block-style mapping; both appear in workflows.
+  braces:
+    level: warning
+
+  # Comments don't need to start with a space (some tooling emits `#--`)
+  # and need only 1 space between code and trailing comment.
+  comments:
+    require-starting-space: false
+    min-spaces-from-content: 1
+
+  # Indentation: 2 spaces; sequences may be flush with parent or indented.
+  indentation:
+    spaces: 2
+    indent-sequences: consistent
+    check-multi-line-strings: false
+
+  # Allow visually-aligned `with:` / `env:` blocks (column-aligned RHS
+  # values). `max-spaces-before` is left at the default 0 so accidental
+  # whitespace-before-colon is still caught.
+  colons:
+    max-spaces-after: -1
+
+  # Document-start markers (`---`) are noisy in workflow / action files
+  # and inconsistently applied across consumer repos.
+  document-start: disable

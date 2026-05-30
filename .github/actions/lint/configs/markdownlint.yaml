@@ -1,0 +1,28 @@
+# Packaged default markdownlint-cli2 config shipped with the
+# bos-marketplace-kit `lint` composite action. Used automatically when
+# the consumer repo does NOT define its own
+# `.markdownlint.{yaml,yml,jsonc,json,cjs}` at the repo root. To
+# override, drop any of those files in the consumer repo root and
+# markdownlint-cli2's normal auto-discovery (which takes precedence
+# over `--config`) will pick them up.
+#
+# Tuned for documentation-heavy repos where:
+#   * READMEs include long URLs and inline code blocks (MD013 off).
+#   * Headings legitimately repeat across sub-sections (MD024 allows
+#     siblings_only).
+#   * GitHub-flavoured admonitions (`> [!NOTE]`) are valid (MD028 off).
+#   * Inline HTML (badges, <details>, <kbd>) is allowed (MD033 off).
+#   * Bare URLs without angle brackets are allowed (MD034 off).
+#   * Files don't need an H1 first heading (MD041 off).
+
+default: true
+
+MD013: false
+
+MD024:
+  siblings_only: true
+
+MD028: false
+MD033: false
+MD034: false
+MD041: false

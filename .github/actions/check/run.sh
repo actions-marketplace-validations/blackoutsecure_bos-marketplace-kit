@@ -75,6 +75,20 @@ validate_req require_ghas_secret_scanning "${REQ_GHAS_SECRET_SCANNING}"
 validate_req require_dependabot_alerts    "${REQ_DEPENDABOT_ALERTS}"
 validate_req require_security_devops      "${REQ_SECURITY_DEVOPS}"
 validate_req require_scorecard            "${REQ_SCORECARD}"
+validate_req require_repo_description     "${REQ_REPO_DESCRIPTION}"
+validate_req require_repo_homepage        "${REQ_REPO_HOMEPAGE}"
+validate_req require_repo_topics          "${REQ_REPO_TOPICS}"
+
+case "${REPO_DESC_MAX_LEN}" in
+  ''|*[!0-9]*)
+    die "repo_description_max_length must be a non-negative integer (got: '${REPO_DESC_MAX_LEN}')"
+    ;;
+esac
+case "${REPO_DESC_MIN_LEN}" in
+  ''|*[!0-9]*)
+    die "repo_description_min_length must be a non-negative integer (got: '${REPO_DESC_MIN_LEN}')"
+    ;;
+esac
 
 # ----- Validate *_source inputs + helper for per-rule resolution --
 validate_source() {
@@ -812,6 +826,148 @@ else
   record SR001 "${REQ_SCORECARD}" "no OpenSSF Scorecard workflow found -- scaffold via \`marketplace-kit generate-policy scorecard-workflow\` (free for public repos; results at https://scorecard.dev)"
 fi
 
+# ----- RM001-RM005: live repo "About" box (description/homepage/topics) -
+# Validates what the public sees in the sidebar — the same fields
+# the companion `repo-metadata` composite writes on release.
+# `SAS_JSON` (fetched earlier for the GHAS checks) is the result of
+# `GET /repos/{owner}/{repo}` and carries all three values; reuse it.
+# These fields are public-readable, so the default `GITHUB_TOKEN` is
+# sufficient even when GH002 had to `skip` for lack of admin scope.
+REPO_DESC=""
+REPO_HOMEPAGE=""
+REPO_TOPICS=""
+REPO_TOPICS_COUNT=0
+REPO_DESC_LEN=0
+
+rm_skip_all() {
+  local reason="$1"
+  for id in RM001 RM002 RM003 RM004 RM005; do
+    record "${id}" skip "${reason}"
+  done
+}
+
+if [ -z "${GH_TOKEN}" ]; then
+  rm_skip_all "no github_token -- skipped (pass \`github_token: \${{ github.token }}\` to enable repo About-box checks)"
+elif [ -z "${SAS_JSON}" ]; then
+  rm_skip_all "repo metadata lookup failed -- token may lack \`metadata: read\`, or repo not found"
+else
+  # Extract description/homepage/topics from the single repo GET.
+  # python3 is already a hard dep of this script.
+  RM_FIELDS="$(printf '%s' "${SAS_JSON}" | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+desc = d.get("description") or ""
+home = d.get("homepage") or ""
+topics = d.get("topics") or []
+# Emit on three lines: description (single line; collapse newlines),
+# homepage, then space-separated topics. Description is base64-safe-ish
+# by collapsing CR/LF; topic slugs cannot contain whitespace per
+# GitHub rules so a space delimiter is safe.
+desc = " ".join(desc.split())
+print(desc)
+print(home)
+print(" ".join(t for t in topics if t))
+' 2>/dev/null || true)"
+  # Parse the three lines back out.
+  REPO_DESC="$(printf '%s\n' "${RM_FIELDS}" | sed -n '1p')"
+  REPO_HOMEPAGE="$(printf '%s\n' "${RM_FIELDS}" | sed -n '2p')"
+  REPO_TOPICS="$(printf '%s\n' "${RM_FIELDS}" | sed -n '3p')"
+  REPO_DESC_LEN="${#REPO_DESC}"
+  if [ -n "${REPO_TOPICS}" ]; then
+    # shellcheck disable=SC2086
+    set -- ${REPO_TOPICS}
+    REPO_TOPICS_COUNT="$#"
+    set --
+  fi
+
+  # ----- RM001: description present -------------------------------
+  if [ "${REQ_REPO_DESCRIPTION}" = "skip" ]; then
+    record RM001 skip "repo description check disabled via require_repo_description"
+  elif [ -n "${REPO_DESC}" ]; then
+    record RM001 pass "repo description present (${REPO_DESC_LEN} chars)"
+  else
+    record RM001 "${REQ_REPO_DESCRIPTION}" "repo description is empty -- set it via Settings > General, or run the \`repo-metadata\` composite on release"
+  fi
+
+  # ----- RM002: description length within bounds ------------------
+  # GitHub stores up to 350 chars (configurable). Above the cap the
+  # next PATCH would be rejected. Very short descriptions are a
+  # quality warning, not a hard fail.
+  if [ "${REQ_REPO_DESCRIPTION}" = "skip" ]; then
+    record RM002 skip "repo description length check disabled via require_repo_description"
+  elif [ -z "${REPO_DESC}" ]; then
+    record RM002 skip "no repo description to measure (see RM001)"
+  elif [ "${REPO_DESC_LEN}" -gt "${REPO_DESC_MAX_LEN}" ]; then
+    record RM002 fail "repo description is ${REPO_DESC_LEN} chars (>${REPO_DESC_MAX_LEN}) -- GitHub will reject the next PATCH; trim to <=${REPO_DESC_MAX_LEN}"
+  elif [ "${REPO_DESC_MIN_LEN}" -gt 0 ] && [ "${REPO_DESC_LEN}" -lt "${REPO_DESC_MIN_LEN}" ]; then
+    record RM002 warn "repo description is only ${REPO_DESC_LEN} chars (<${REPO_DESC_MIN_LEN}); consider a fuller summary (the About box has room — the Marketplace card limit of 125 chars only applies to \`action.yml\`)"
+  else
+    record RM002 pass "repo description length ${REPO_DESC_LEN} chars within bounds (>=${REPO_DESC_MIN_LEN}, <=${REPO_DESC_MAX_LEN})"
+  fi
+
+  # ----- RM003: homepage set + URL-shaped -------------------------
+  # Homepage presence is opt-in (default `skip`). But IF a homepage
+  # is set, it MUST be an http(s) URL — a non-URL value is always
+  # reported as `fail`, since it indicates a misconfiguration that
+  # renders as a broken link in the About box.
+  if [ -z "${REPO_HOMEPAGE}" ]; then
+    if [ "${REQ_REPO_HOMEPAGE}" = "skip" ]; then
+      record RM003 skip "repo homepage check disabled via require_repo_homepage"
+    else
+      record RM003 "${REQ_REPO_HOMEPAGE}" "repo homepage is empty -- set it via Settings > General, or pass \`homepage:\` to the \`repo-metadata\` composite"
+    fi
+  else
+    case "${REPO_HOMEPAGE}" in
+      http://*|https://*)
+        record RM003 pass "repo homepage set: ${REPO_HOMEPAGE}"
+        ;;
+      *)
+        record RM003 fail "repo homepage is set but not an http(s) URL: '${REPO_HOMEPAGE}'"
+        ;;
+    esac
+  fi
+
+  # ----- RM004: topic count ---------------------------------------
+  # GitHub caps at 20 topics — exceeding is always fail.
+  if [ "${REPO_TOPICS_COUNT}" -gt 20 ]; then
+    record RM004 fail "repo has ${REPO_TOPICS_COUNT} topics (>20) -- GitHub caps at 20; trim the list"
+  elif [ "${REQ_REPO_TOPICS}" = "skip" ]; then
+    record RM004 skip "repo topics check disabled via require_repo_topics"
+  elif [ "${REPO_TOPICS_COUNT}" -eq 0 ]; then
+    record RM004 "${REQ_REPO_TOPICS}" "repo has no topics -- topics drive Marketplace + search discoverability; set them via Settings > General or the \`repo-metadata\` composite"
+  else
+    record RM004 pass "repo has ${REPO_TOPICS_COUNT} topic(s) (<=20)"
+  fi
+
+  # ----- RM005: topic format validity -----------------------------
+  # GitHub rules: lowercase, [a-z0-9-], <=50 chars, must start and
+  # end with a letter or digit (no leading/trailing hyphen). Format
+  # violations always fail — they indicate data the API would
+  # reject on the next PUT /topics.
+  if [ "${REPO_TOPICS_COUNT}" -eq 0 ]; then
+    record RM005 skip "no topics to validate (see RM004)"
+  else
+    INVALID_TOPICS=""
+    # shellcheck disable=SC2086
+    set -- ${REPO_TOPICS}
+    for t in "$@"; do
+      if [ "${#t}" -gt 50 ] || ! printf '%s' "${t}" | grep -Eq '^([a-z0-9]|[a-z0-9][a-z0-9-]*[a-z0-9])$'; then
+        INVALID_TOPICS="${INVALID_TOPICS} ${t}"
+      fi
+    done
+    set --
+    INVALID_TOPICS="$(printf '%s' "${INVALID_TOPICS}" | sed -E 's/^[[:space:]]+//')"
+    if [ -n "${INVALID_TOPICS}" ]; then
+      record RM005 fail "repo topic(s) violate GitHub format rules (lowercase, [a-z0-9-], <=50 chars, no leading/trailing hyphen): ${INVALID_TOPICS}"
+    else
+      record RM005 pass "all ${REPO_TOPICS_COUNT} repo topic(s) match GitHub format rules"
+    fi
+  fi
+fi
+
 # ----- Aggregate + emit -------------------------------------------
 PASSED="$(awk -F'|' '$2=="pass"{n++} END{print n+0}' "${REPORT_FILE}")"
 FAILED="$(awk -F'|' '$2=="fail"{n++} END{print n+0}' "${REPORT_FILE}")"
@@ -839,6 +995,32 @@ SORTED_REPORT="$(sort -t'|' -k1,1 "${REPORT_FILE}")"
     gsub(/\|/, "\\|", $3);
     printf "| `%s` | %s | %s |\n", $1, icon, $3;
   }'
+
+  # Snapshot of the live repo "About" box so the reader sees the
+  # actual values their consumers see, without re-checking the
+  # repo. Only emitted when the GH API lookup succeeded; otherwise
+  # the RM rows already explain why we have nothing to show.
+  if [ -n "${SAS_JSON:-}" ]; then
+    echo ""
+    echo "### Current repo About box"
+    echo ""
+    echo "| Field | Value |"
+    echo "|---|---|"
+    # Escape pipes in user-visible fields so the table renders.
+    desc_md="${REPO_DESC:-_(empty)_}"
+    desc_md="$(printf '%s' "${desc_md}" | sed -e 's/|/\\|/g')"
+    home_md="${REPO_HOMEPAGE:-_(empty)_}"
+    home_md="$(printf '%s' "${home_md}" | sed -e 's/|/\\|/g')"
+    echo "| Description (${REPO_DESC_LEN:-0} chars) | ${desc_md} |"
+    echo "| Homepage | ${home_md} |"
+    if [ "${REPO_TOPICS_COUNT:-0}" -gt 0 ]; then
+      topics_md="$(printf '%s' "${REPO_TOPICS}" | sed -e 's/|/\\|/g' -e 's/ /`, `/g')"
+      echo "| Topics (${REPO_TOPICS_COUNT}) | \`${topics_md}\` |"
+    else
+      echo "| Topics | _(none)_ |"
+    fi
+  fi
+
   echo ""
   echo "Generated by [bos-marketplace-kit](https://github.com/blackoutsecure/bos-marketplace-kit)."
 } >> "${GITHUB_STEP_SUMMARY:-/dev/stderr}"

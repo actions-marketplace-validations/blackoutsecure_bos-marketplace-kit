@@ -202,6 +202,26 @@ inputs:
     description: "SR001 severity: 'fail', 'warn', or 'skip'."
     required: false
     default: 'skip'
+  require_repo_description:
+    description: "RM001/RM002 severity (repo About-box description): 'fail', 'warn', or 'skip'."
+    required: false
+    default: 'warn'
+  require_repo_homepage:
+    description: "RM003 severity (repo About-box homepage URL): 'fail', 'warn', or 'skip'. Malformed URLs always fail."
+    required: false
+    default: 'skip'
+  require_repo_topics:
+    description: "RM004/RM005 severity (repo About-box topics): 'fail', 'warn', or 'skip'. Format violations and >20 topics always fail."
+    required: false
+    default: 'warn'
+  repo_description_max_length:
+    description: 'Hard upper bound for the repo description (RM002). Default 350 (GitHub limit).'
+    required: false
+    default: '350'
+  repo_description_min_length:
+    description: 'Lower bound below which the repo description triggers a warning (RM002). Default 30. Set 0 to disable.'
+    required: false
+    default: '30'
 
 outputs:
   passed:
@@ -258,3 +278,8 @@ runs:
         require_dependabot_alerts:    ${{ inputs.require_dependabot_alerts }}
         require_security_devops:      ${{ inputs.require_security_devops }}
         require_scorecard:            ${{ inputs.require_scorecard }}
+        require_repo_description:     ${{ inputs.require_repo_description }}
+        require_repo_homepage:        ${{ inputs.require_repo_homepage }}
+        require_repo_topics:          ${{ inputs.require_repo_topics }}
+        repo_description_max_length:  ${{ inputs.repo_description_max_length }}
+        repo_description_min_length:  ${{ inputs.repo_description_min_length }}

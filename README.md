@@ -30,6 +30,12 @@ GitHub Marketplace Actions safely:
   `esbuild`, `tsup`), rebuild `dist/` from `src/` and fail the PR if
   the committed bundle is stale. Stops the classic Marketplace bug
   where merged source changes ship with the previous build.
+* **`repo-metadata`** — sync the repo's `About` box (description,
+  homepage, topics, and the Releases / Deployments / Packages
+  sidebar widgets). Each field can be set explicitly **or** derived
+  from the README via GitHub Models — explicit values always win.
+  Designed to run as the last step of a release so the public-facing
+  description matches what just shipped.
 
 Use it as a **composite action**, as a **reusable workflow**, or as a
 **local CLI**. Same checks. Same output.
@@ -129,7 +135,8 @@ bos-marketplace-kit/
 │   ├── branding-preview/                # render the icon + colour SVG
 │   ├── dist-check/                      # bundled-dist freshness check (JS Actions)
 │   ├── lint/                            # markdown/yaml/shell/actions linter
-│   └── branch-protection/               # branch-protection compliance (check + enforce)
+│   ├── branch-protection/               # branch-protection compliance (check + enforce)
+│   └── repo-metadata/                   # sync About box (description/homepage/topics) on release
 ├── .github/workflows/                  # dev-only CI; NEVER promoted to main
 │   ├── tests.yml                       # Python CLI smoke + pytest
 │   ├── codeql.yml                      # CodeQL static analysis
@@ -157,19 +164,24 @@ The kit ships **two** kinds of automation, and they answer different questions:
 Rule of thumb: if a maintainer needs to *re-grant* a scope to make
 it work, it lives in `scripts/`. Everything else is a composite.
 
-### A note on the bundled `_bp.py`
+### A note on the bundled helpers
 
-The `branch-protection` composite ships an inline Python helper at
-`.github/actions/branch-protection/_bp.py`. It is **not** part of the
-PyPI package — it lives next to its consumer so that downstream users
-who pin the composite (`uses: blackoutsecure/bos-marketplace-kit/.github/actions/branch-protection@v1`)
-get the helper for free, with no `pip install` required.
+Two composites ship inline Python helpers next to their `action.yml`:
 
-The composite invokes it as
-`python3 "${GITHUB_ACTION_PATH}/_bp.py" build|compare|parse-restrict`.
-The test suite imports it via `importlib.util.spec_from_file_location`
+* `branch-protection/_bp.py` — drift detection + payload builder.
+* `repo-metadata/helper.py` — README prose extraction, description
+  clamping, GitHub-valid topic sanitization.
+
+Neither helper is part of the PyPI package — they live next to their
+consumer so downstream users who pin the composite (e.g.
+`uses: blackoutsecure/bos-marketplace-kit/.github/actions/repo-metadata@v1`)
+get them for free, with no `pip install` required.
+
+The composites invoke them as
+`python3 "${GITHUB_ACTION_PATH}/<helper>.py" <subcommand>`.
+The test suite imports them via `importlib.util.spec_from_file_location`
 in `tests/conftest.py` so it can exercise the same code paths the
-composite runs at action time.
+composites run at action time.
 
 ## The dev → main publish model
 
@@ -509,6 +521,106 @@ jobs:
 The composite outputs `is_compliant`, `drift_summary` (multi-line),
 and `mode_applied`. Use these to gate downstream jobs or post a
 summary comment.
+
+### Repo `About` box sync (`repo-metadata`)
+
+Keeps the public-facing repo `About` box honest after each release.
+Each of the three user-visible fields — **description**, **homepage**,
+and **topics** — can be set in one of three ways:
+
+1. **Explicit input** (`description:` / `homepage:` / `topics:`) —
+   when non-empty, this always wins. AI is never consulted.
+2. **AI-generated from the README** — falls back here when the
+   explicit input is empty and AI is enabled (`ai_enabled: true`,
+   default). `homepage` is never AI-derived; it's caller-supplied or
+   left alone.
+3. **Deterministic fallback** — for description, the raw README seed
+   paragraph (still clamped). For topics, the `topics_fallback`
+   list. For homepage, the existing value is left untouched.
+
+All values pass through the same sanitizers regardless of source:
+description ≤ 350 chars (word-boundary clamp + ellipsis), topics
+lowercase `a-z0-9-`, ≤ 50 chars each, ≤ 20 total. You can mix and
+match — e.g. set `description` explicitly, let AI pick `topics`,
+leave `homepage` alone.
+
+Defaults are framed around "this is a release":
+
+* `show_releases: true` — the Releases sidebar widget is on.
+* `show_deployments: false` / `show_packages: false` — opt-in.
+* `generate_topics: false` — opt-in. Set `true` and (optionally)
+  pass `topics_fallback` for when AI is unavailable.
+* `ai_enabled: true`, `ai_model: openai/gpt-4o-mini`. Falls back
+  deterministically to the raw README seed when the AI call fails
+  (most commonly because the job lacks `models: read`).
+
+Tokens: the standard `${{ github.token }}` is **not** enough — this
+composite PATCHes the repo and needs `Administration: write`. Pass a
+fine-grained PAT or an installation token in `github_token`.
+
+#### Fully explicit (no AI)
+
+Set every field yourself; no `models: read` needed, no surprises.
+
+```yaml
+jobs:
+  sync-about-box:
+    runs-on: ubuntu-latest
+    needs: release
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+      - uses: blackoutsecure/bos-marketplace-kit/.github/actions/repo-metadata@v1
+        with:
+          github_token: ${{ secrets.REPO_ADMIN_PAT }}
+          description: 'Lint, gate, and publish GitHub Marketplace Actions — without the boilerplate.'
+          homepage:    'https://github.com/marketplace/actions/blackout-secure-marketplace-kit'
+          topics:      'github-actions marketplace devops linting branch-protection'
+          ai_enabled:  'false'   # belt-and-braces; explicit values would win anyway
+```
+
+#### AI-assisted
+
+Let GitHub Models rewrite the README lead paragraph as the
+description and derive topics. Explicit values still override
+individual fields when you want to.
+
+```yaml
+jobs:
+  sync-about-box:
+    runs-on: ubuntu-latest
+    needs: release
+    permissions:
+      contents: read
+      models: read           # required for the AI rewrite; fallback still works without it
+    steps:
+      - uses: actions/checkout@v5
+      - uses: blackoutsecure/bos-marketplace-kit/.github/actions/repo-metadata@v1
+        with:
+          # Admin PAT — default GITHUB_TOKEN cannot PATCH repo metadata.
+          github_token: ${{ secrets.REPO_ADMIN_PAT }}
+          homepage: 'https://github.com/marketplace/actions/my-cool-action'
+          generate_topics: 'true'
+          topics_fallback: 'github-actions devops marketplace'
+          # Defaults already match a release: show_releases=true,
+          # show_deployments=false, show_packages=false.
+          show_packages: 'true'   # opt in if your repo publishes packages
+```
+
+Widget toggles caveat: GitHub does not (as of this writing) document
+the `show_releases` / `show_deployments` / `show_packages` fields on
+the public REST API. The composite sends them on the standard repo
+PATCH anyway (the call succeeds because PATCH is permissive about
+unknown fields) and emits a `::notice::` so operators know the toggle
+part is best-effort. `description`, `homepage`, and `topics` are
+always applied through documented authoritative endpoints.
+
+Outputs: `description`, `description_source` (`explicit` | `ai` |
+`readme` | `existing`), `homepage`, `topics`, `topics_source`
+(`explicit` | `ai` | `fallback` | `skipped`), `ai_used`, `applied`.
+Use `dry_run: 'true'` to render the proposed payload to the job
+summary without calling the API.
 
 ## Publishing to Marketplace
 
@@ -861,6 +973,7 @@ Rule families:
 | `GH###` | Configurable | GitHub Advanced Security toggle disabled (code scanning, secret scanning, Dependabot alerts). Requires `github_token`. |
 | `MS###` | Configurable | Microsoft Security DevOps workflow missing. Default `skip` (opt-in). |
 | `SR###` | Configurable | OpenSSF Scorecard workflow missing. Default `skip` (opt-in). |
+| `RM###` | Configurable | Live repo "About" box (description, homepage, topics) missing or non-compliant. Reads `GET /repos/{owner}/{repo}` (default `GITHUB_TOKEN` is sufficient). Companion to the `repo-metadata` composite. |
 
 ### MP001 — Top-level manifest keys
 
@@ -1314,6 +1427,53 @@ Token-Permissions, etc.) and publishes the result at
 * **Generator:** `marketplace-kit generate-policy scorecard-workflow`.
 * Recommended for public Marketplace actions — your Scorecard becomes
   a public quality signal alongside the Marketplace listing.
+
+### RM001-RM005 — Live repo "About" box (description, homepage, topics)
+
+Validates what the public sees in the repo sidebar — the same
+fields the companion [`repo-metadata`](#repo-about-box-sync-repo-metadata)
+composite writes on release. Each rule reads
+`GET /repos/{owner}/{repo}`; the default `GITHUB_TOKEN` is enough
+(these fields are public-readable). The job summary additionally
+emits a **Current repo About box** sub-section showing the actual
+live values so you can confirm what consumers see without leaving
+the workflow log.
+
+| ID    | Field                | Pass criterion                                                         | Default policy | Hard rules                                              |
+|-------|----------------------|------------------------------------------------------------------------|----------------|---------------------------------------------------------|
+| RM001 | `description` set    | Non-empty                                                              | `warn`         | —                                                       |
+| RM002 | `description` length | `repo_description_min_length` ≤ len ≤ `repo_description_max_length`    | `warn`         | `>repo_description_max_length` (default 350) → **fail** |
+| RM003 | `homepage`           | http(s) URL                                                            | `skip`         | Set but non-URL → **fail** (regardless of policy)       |
+| RM004 | `topics` count       | 1 ≤ count ≤ 20                                                         | `warn`         | `count > 20` → **fail** (GitHub cap; regardless of policy) |
+| RM005 | `topics` format      | Lowercase, `[a-z0-9-]`, ≤ 50 chars each, no leading/trailing hyphen   | (inherits)     | Any malformed topic → **fail** (regardless of policy)   |
+
+**Why "hard fail regardless of policy" on some rules?** When values
+violate GitHub's own format/cap rules, the *next* `PATCH /repos/{}`
+or `PUT /repos/{}/topics` call would be rejected — so a warning would
+mask a soon-to-be broken release. Format violations are always
+blocking; absence is configurable.
+
+**Tuning the bounds** (per-repo overrides):
+
+```yaml
+- uses: blackoutsecure/bos-marketplace-kit/.github/actions/check@v1
+  with:
+    github_token: ${{ github.token }}
+    # Make every RM rule blocking on the publish branch:
+    require_repo_description: 'fail'
+    require_repo_homepage:    'fail'
+    require_repo_topics:      'fail'
+    # Allow shorter "tagline-style" descriptions:
+    repo_description_min_length: '0'
+    # Raise the upper cap (rare — GitHub still hard-caps at 350):
+    repo_description_max_length: '350'
+```
+
+**Default `GITHUB_TOKEN` is enough** for RM001-RM005 — unlike the
+`repo-metadata` composite which *writes* these fields and needs
+`Administration: write`, the check action only *reads* them, which
+`metadata: read` (granted by default to `GITHUB_TOKEN`) already
+covers.
 
 ### Adding new rules
 

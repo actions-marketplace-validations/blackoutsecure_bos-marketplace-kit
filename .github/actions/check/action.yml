@@ -303,6 +303,58 @@ inputs:
     required: false
     default: 'skip'
 
+  # ----- RM### live repo "About" box ---------------------------------------
+  # These rules query the live GitHub repo metadata
+  # (`GET /repos/{owner}/{repo}`) and validate the description,
+  # homepage, and topics that public users see in the sidebar — i.e.
+  # the same fields the companion `repo-metadata` composite writes on
+  # release. The default `GITHUB_TOKEN` has enough scope (these fields
+  # are public-readable). The job summary additionally reports the
+  # actual current values so you can confirm what's live.
+  require_repo_description:
+    description: >-
+      Policy for the GitHub repo description being present and within
+      length bounds (RM001/RM002). One of `fail`, `warn`, `skip`.
+      Default `warn`. Reads via `GET /repos/{owner}/{repo}` — needs
+      only `metadata: read`, satisfied by the default `GITHUB_TOKEN`.
+    required: false
+    default: 'warn'
+  require_repo_homepage:
+    description: >-
+      Policy for the GitHub repo homepage (Website) being set
+      (RM003). One of `fail`, `warn`, `skip`. Default `skip` — opt
+      in when your repo has a public site (Marketplace listing URL,
+      docs site, etc.). When a homepage is set, it is always
+      validated as http(s); a malformed URL is reported as `fail`
+      regardless of this input.
+    required: false
+    default: 'skip'
+  require_repo_topics:
+    description: >-
+      Policy for the GitHub repo having at least one topic
+      (RM004/RM005). One of `fail`, `warn`, `skip`. Default `warn`.
+      Topics drive Marketplace + search discoverability. Format
+      violations (RM005) and the GitHub hard cap of 20 topics are
+      reported as `fail` regardless of this input.
+    required: false
+    default: 'warn'
+  repo_description_max_length:
+    description: >-
+      Hard upper bound for the GitHub repo description, in chars
+      (RM002). GitHub stores up to 350; descriptions longer than
+      this are reported as `fail` because the next PATCH (e.g. by
+      the `repo-metadata` composite) would be rejected. Default
+      `350`.
+    required: false
+    default: '350'
+  repo_description_min_length:
+    description: >-
+      Lower bound below which the repo description triggers a
+      "too brief to be useful" warning (RM002). Default `30`. Set
+      `0` to disable the lower-bound check.
+    required: false
+    default: '30'
+
 outputs:
   passed:
     description: 'Number of checks that passed.'
@@ -433,6 +485,11 @@ runs:
         REQ_DEPENDABOT_ALERTS:    ${{ inputs.require_dependabot_alerts }}
         REQ_SECURITY_DEVOPS:      ${{ inputs.require_security_devops }}
         REQ_SCORECARD:            ${{ inputs.require_scorecard }}
+        REQ_REPO_DESCRIPTION:     ${{ inputs.require_repo_description }}
+        REQ_REPO_HOMEPAGE:        ${{ inputs.require_repo_homepage }}
+        REQ_REPO_TOPICS:          ${{ inputs.require_repo_topics }}
+        REPO_DESC_MAX_LEN:        ${{ inputs.repo_description_max_length }}
+        REPO_DESC_MIN_LEN:        ${{ inputs.repo_description_min_length }}
         REPO_FULL:                ${{ github.repository }}
       # Delegated to a sibling script because the rendered template
       # of the inline body exceeded the GitHub Actions runner-side

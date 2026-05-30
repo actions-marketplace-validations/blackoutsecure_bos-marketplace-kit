@@ -114,6 +114,13 @@ jobs:
           require_dependabot_alerts:    warn
           require_security_devops:      skip
           require_scorecard:            skip
+          # RM### live About-box checks: warn-level (matches kit
+          # defaults). The repo IS published with a description and
+          # topics via the `repo-metadata` composite on release, so
+          # these should pass once a release has happened.
+          require_repo_description:     warn
+          require_repo_homepage:        warn
+          require_repo_topics:          warn
           # MP009 (no workflow files on default branch) is a soft-warn
           # the rule itself flags as 'noisy by design on dev'. The kit
           # IS the canonical case where dev legitimately holds workflows,

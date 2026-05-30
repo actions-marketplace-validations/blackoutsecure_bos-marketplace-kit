@@ -27,3 +27,9 @@ def _import_from_path(module_name: str, file_path: Path):
 # Eagerly import the bundled module under the alias used by tests.
 _bp = _import_from_path("_bp", REPO_ROOT / ".github" / "actions" / "branch-protection" / "_bp.py")
 sys.modules["bp_helper"] = _bp  # human-friendly alias for tests
+
+_repo_meta = _import_from_path(
+    "_repo_metadata_helper",
+    REPO_ROOT / ".github" / "actions" / "repo-metadata" / "helper.py",
+)
+sys.modules["repo_metadata_helper"] = _repo_meta

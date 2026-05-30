@@ -114,13 +114,25 @@ jobs:
           require_dependabot_alerts:    warn
           require_security_devops:      skip
           require_scorecard:            skip
-          # RM### live About-box checks: warn-level (matches kit
-          # defaults). The repo IS published with a description and
-          # topics via the `repo-metadata` composite on release, so
-          # these should pass once a release has happened.
+          # RM### live About-box checks.
+          # Kit ships the `repo-metadata` composite that auto-syncs
+          # these on release, but the kit's own release.yml does NOT
+          # call it yet (would need a PAT with `Administration: write`,
+          # which is a separate token-design decision from the existing
+          # `RELEASE_PAT` that only has `Contents: write`). Until that's
+          # wired up, the kit's own About box is hand-managed via
+          # Settings > General -- so:
+          #   * RM001/RM002 (description): warn -- description IS set,
+          #     this passes; we want the warning to fire on regression.
+          #   * RM003 (homepage): skip -- matches the kit default; the
+          #     Marketplace listing IS the kit's homepage and we don't
+          #     duplicate it in the About box.
+          #   * RM004/RM005 (topics): skip TEMPORARILY -- bump back to
+          #     `warn` once `repo-metadata` has been wired into release
+          #     OR topics have been set manually via Settings > General.
           require_repo_description:     warn
-          require_repo_homepage:        warn
-          require_repo_topics:          warn
+          require_repo_homepage:        skip
+          require_repo_topics:          skip
           # MP009 (no workflow files on default branch) is a soft-warn
           # the rule itself flags as 'noisy by design on dev'. The kit
           # IS the canonical case where dev legitimately holds workflows,

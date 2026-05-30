@@ -719,6 +719,12 @@ The release workflow:
    parent directories, removes anything not in the allowlist from
    `main`, and pushes a clean commit + tag.
 4. Creates a GitHub Release on the new tag.
+5. Refreshes the repo `About` box (description / topics / sidebar
+   widgets) via the bundled `repo-metadata` composite — soft step,
+   gated on `secrets.REPO_ADMIN_PAT` being set. When the secret is
+   absent the job auto-skips with a notice (the release itself is
+   already published and a failed metadata sync should not roll it
+   back). Suppress with `skip_repo_metadata: true` on dispatch.
 
 ### Step 5b — Tokens, secrets, and variables
 
@@ -733,6 +739,7 @@ for anyone copying that template into another repo.
 |-------|-----------|----------|----------|----------------------|-----|
 | `secrets.GITHUB_TOKEN` | **Mandatory** (auto-provided by Actions) | `github-actions[bot]` (Integration App ID `15368`) | `actions/checkout`, default `git push` to `main` + tag, `gh release create`, all `gh api` probes (FUNDING resolver) | Job-level `permissions: { contents: write }` on the `promote` job; `contents: write` on the `release` job for the GitHub Release create. | Cannot be disabled. Every workflow run is auto-issued one per job (TTL = job lifetime). Without it, `actions/checkout` cannot clone, `gh api` cannot authenticate, and the workflow simply cannot run. There is no "off" mode. |
 | `secrets.RELEASE_PAT` | Optional (opt-in) | The PAT owner (user) or the GitHub App backing a fine-grained PAT | Same push as above, when `GITHUB_TOKEN` cannot satisfy branch protection | **Fine-grained (recommended):** Contents = Read & Write on the action repo, Metadata = Read-only. **Classic:** the `repo` scope (see [classic PAT specifics](#classic-pat-specifics) below for the explicit checkbox list). | Only needed when `main` is locked behind a ruleset or classic protection that `GITHUB_TOKEN` cannot bypass. The PAT's identity (or its backing App) MUST be listed in the ruleset's `bypass_actors`. The resolver probes `/user` (validity), `repos/<repo>.permissions.push` (identity), AND `POST /repos/<repo>/git/blobs` (token scope) BEFORE checkout and fails the job with a remediation hint on any misconfiguration — silent fallback would hide operator intent. When unset, the resolver emits a notice and falls through to `GITHUB_TOKEN`. |
+| `secrets.REPO_ADMIN_PAT` | Optional (opt-in) | The PAT owner (user) or the GitHub App backing a fine-grained PAT | Post-release `repo-metadata` composite: PATCH `/repos/{owner}/{repo}` (description / homepage / sidebar widgets) + PUT `/repos/{owner}/{repo}/topics` | **Fine-grained (recommended):** Administration = Read & Write AND Metadata = Read-only on the action repo. Classic PATs require the `repo` scope but classic does not currently include an Administration-write granular scope — fine-grained is strongly preferred here. | The default `GITHUB_TOKEN` (even with `contents: write`) cannot PATCH repo administration fields or write topics. RELEASE_PAT covers Contents:Write for the promote push but does not imply Administration. Keep the two PATs separated so the metadata sync's blast radius is auditable independently of the release push. When unset, the `repo-metadata` job auto-skips with a notice — the release itself still publishes. |
 
 ##### Classic PAT specifics
 

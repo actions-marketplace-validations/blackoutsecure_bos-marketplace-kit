@@ -92,6 +92,20 @@ name: Release · promote dev → main + tag + publish
         required: false
         type: boolean
         default: false
+      skip_repo_metadata:
+        description: >-
+          Skip the post-release repo `About` box sync
+          (`repo-metadata` composite). Off by default — every
+          successful release refreshes description / topics /
+          sidebar widgets from the just-promoted README using
+          `secrets.REPO_ADMIN_PAT`. Set `true` for release
+          experiments where you do not want the live About box
+          mutated, or when iterating on the metadata pipeline
+          itself. The job also auto-skips (with a notice) when
+          `REPO_ADMIN_PAT` is unset.
+        required: false
+        type: boolean
+        default: false
       run_prechecks:
         description: >-
           Before the preflight gate, dispatch the required dev
@@ -1015,6 +1029,7 @@ jobs:
             .github/actions/dist-check
             .github/actions/lint
             .github/actions/branch-protection
+            .github/actions/repo-metadata
           extra_allowlist_paths: |
             .github/CODEOWNERS
             .github/dependabot.yml
@@ -1124,3 +1139,87 @@ jobs:
             ${prerelease_flag} ${draft_flag}
 
           echo "Release created: ${TAG}"
+
+  repo-metadata:
+    name: Sync repo About box
+    needs: [preflight-runner-config, promote, release]
+    # Run only when an actual release was published. `release` itself
+    # skips on `dry_run` or when `promote.promoted != 'true'`, so a
+    # success here is the right "a tag now exists on origin" signal.
+    # The `!cancelled()` guard keeps the explicit job-level skip
+    # (REPO_ADMIN_PAT missing) distinct from upstream cancellation.
+    if: ${{ !cancelled() && needs.release.result == 'success' && !inputs.skip_repo_metadata }}
+    # Resolves `vars.DEFAULT_RUNNER` (bare label or JSON-array string).
+    # Both presence and shape are enforced by `preflight-runner-config`,
+    # so this expression has no fallback — see the hub's README
+    # ("Runner resolution") for the full rationale.
+    runs-on: ${{ fromJSON(startsWith(vars.DEFAULT_RUNNER, '[') && vars.DEFAULT_RUNNER || format('"{0}"', vars.DEFAULT_RUNNER)) }}
+    timeout-minutes: 5
+    permissions:
+      # `contents: read` for the post-promote checkout (so the composite
+      # reads the README that landed on `main`, not the dev tree).
+      # `models: read` for the GitHub Models AI rewrite of the description
+      # and topic generation. The composite falls back deterministically
+      # to the raw README seed if the AI call fails, so absence of
+      # `models: read` degrades gracefully (with a `::warning::`).
+      contents: read
+      models: read
+    steps:
+      # ----------------------------------------------------------------
+      # The composite PATCHes /repos/{owner}/{repo} + PUTs the topics
+      # endpoint, both of which require `Administration: write`. The
+      # default GITHUB_TOKEN (even with contents:write) is rejected by
+      # GitHub on those endpoints. RELEASE_PAT is the wrong scope here
+      # — it grants Contents:Write for the promote push but does not
+      # imply Administration. Keep the two PATs separated: REPO_ADMIN_PAT
+      # is the documented secret name in README § "Repo About box sync".
+      #
+      # When the secret is unset we skip with a notice rather than fail
+      # the release — the tag + GitHub Release are already published
+      # at this point, so the metadata refresh is a soft post-step.
+      # ----------------------------------------------------------------
+      - id: token-check
+        name: Check REPO_ADMIN_PAT availability
+        env:
+          HAS_PAT: ${{ secrets.REPO_ADMIN_PAT != '' && 'true' || 'false' }}
+        run: |
+          set -euo pipefail
+          if [ "${HAS_PAT}" != "true" ]; then
+            {
+              echo "## Repo metadata sync"
+              echo ""
+              echo "Skipped — \`secrets.REPO_ADMIN_PAT\` is not configured."
+              echo ""
+              echo "The release published successfully; the public \`About\` box was not refreshed."
+              echo ""
+              echo "To enable post-release metadata sync, provision a fine-grained PAT with **Administration: Read & Write** (and **Metadata: Read-only**) on this repo, then add it as the \`REPO_ADMIN_PAT\` repository secret. See README § 'Repo About box sync (repo-metadata)'."
+            } >> "${GITHUB_STEP_SUMMARY}"
+            echo "::notice title=Repo metadata sync skipped::REPO_ADMIN_PAT secret not configured; release succeeded but the public About box was not refreshed. Provision a fine-grained PAT with Administration:Write to enable."
+          fi
+          echo "has_pat=${HAS_PAT}" >> "${GITHUB_OUTPUT}"
+
+      - if: steps.token-check.outputs.has_pat == 'true'
+        name: Checkout post-promote main
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # Read the post-promote main tree — same source the
+          # Marketplace listing renders from, so the AI description
+          # and topic seed come from the shipped README.
+          ref: ${{ needs.promote.outputs.target_sha }}
+          persist-credentials: false
+
+      - if: steps.token-check.outputs.has_pat == 'true'
+        name: Sync About box (description / topics / widgets)
+        uses: ./.github/actions/repo-metadata
+        with:
+          github_token: ${{ secrets.REPO_ADMIN_PAT }}
+          # description: omitted — the composite rewrites the README
+          # lead paragraph via GitHub Models (falls back to the raw
+          # README seed when the AI call fails).
+          # homepage: omitted — leaves the existing Marketplace URL
+          # in the About box untouched. Pass an http(s) URL here to
+          # set it; pass `__unset__` to clear.
+          generate_topics: 'true'
+          topics_fallback: 'github-actions marketplace devops linting branch-protection composite-action'
+          # Defaults already match a release artefact: show_releases=true,
+          # show_deployments=false, show_packages=false.

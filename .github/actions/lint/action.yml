@@ -219,7 +219,12 @@ runs:
             echo "| ${label} | ❌ fail (rc=${rc}) | ${n} |" >> "${SUMMARY}"
             ANY_FAIL=1
           elif [[ "${n}" -gt 0 ]]; then
-            echo "| ${label} | ⚠ warn | ${n} |" >> "${SUMMARY}"
+            # `⚠️` (U+26A0 U+FE0F) is the emoji-presentation form; the bare
+            # `⚠` (U+26A0) renders as a black outline glyph in the GitHub
+            # step summary, which made the warn row visually indistinguishable
+            # from the surrounding text. The VS16 selector promotes it to the
+            # yellow emoji that matches `✅` / `❌` in the same column.
+            echo "| ${label} | ⚠️ warn | ${n} |" >> "${SUMMARY}"
           else
             echo "| ${label} | ✅ clean | 0 |" >> "${SUMMARY}"
           fi

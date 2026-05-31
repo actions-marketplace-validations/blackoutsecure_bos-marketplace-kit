@@ -17,6 +17,16 @@
 # `skip` findings because `GITHUB_TOKEN` lacks admin reach. Adding the
 # PAT upgrades those rows to real `pass`/`fail` evaluations.
 #
+# Policy: when `SCANNING_PAT` is provisioned (org- or repo-level), this
+# workflow runs in advanced mode automatically on every push / PR / dispatch.
+# The secret's presence IS the signal of intent — an operator who minted,
+# scoped and stored the PAT does not also want a redundant flag flipped
+# before the kit will honour it. Explicit opt-out (for one-off baseline
+# sweeps) is preserved via either:
+#   • repo or org var `BOS_SCAN_ADVANCED=false`, or
+#   • workflow_dispatch input `advanced_scanning=false`.
+# Input wins over var wins over the implicit PAT default.
+#
 # Classic PAT: tick ONLY `repo` (top-level — the only classic scope
 # that covers both `security_events` AND admin-read on branch
 # protection / vulnerability-alerts). Untick `workflow`, `admin:org`,
@@ -78,15 +88,34 @@ name: Security scan
         default: 'never'
         options: ['never', 'fail']
       advanced_scanning:
-        description: 'Enable advanced posture probes (PS002/PS003) via SCANNING_PAT.'
+        description: >-
+          Override advanced posture probes (PS002/PS003 + branch protection)
+          for this run. Default `true` matches the PAT-implies-advanced
+          policy: when SCANNING_PAT is provisioned, advanced mode is on.
+          Set `false` for a one-off baseline-only run. Set `true` here +
+          `require_pat=true` to force-validate that SCANNING_PAT is wired up.
         required: false
         type: boolean
-        default: false
+        default: true
       require_pat:
-        description: 'Fail fast if advanced_scanning is requested but SCANNING_PAT is not configured.'
+        description: >-
+          Fail fast if advanced mode was explicitly opted-in (this input or
+          `BOS_SCAN_ADVANCED=true`) but SCANNING_PAT is missing. Does NOT
+          fire on the implicit PAT-present default — that path already
+          self-disables silently when the PAT is unavailable.
         required: false
         type: boolean
         default: false
+      http_timeout:
+        description: >-
+          Per-request HTTP timeout (seconds) for the kit's posture probes.
+          Default `20`. Bump on slow self-hosted egress or when GH API
+          latency surfaces as `PS*** error: HTTP 502 / timeout` rows.
+          Bare integer string; no unit. Forwarded to the hub reusable's
+          `kit_http_timeout` input.
+        required: false
+        type: string
+        default: '20'
 
 permissions:
   contents: read
@@ -98,10 +127,13 @@ concurrency:
 jobs:
   # ---------------------------------------------------------------------------
   # Resolve advanced-PAT mode + verify secret availability before the scan
-  # reusable runs. Mirrors the resolution pattern used elsewhere (dispatch
-  # input > repo/org var fallback) so behaviour is consistent across kits.
-  # `require_pat` enforces fail-fast when the PAT was demanded but missing,
-  # preventing a silent baseline-only degradation.
+  # reusable runs. Three precedence layers (later overrides earlier):
+  #   1. HAS_PAT presence                 — implicit baseline policy
+  #   2. BOS_SCAN_ADVANCED repo/org var   — operator-wide override
+  #   3. workflow_dispatch input          — one-off run override
+  # `require_pat` is a fail-fast guard for the EXPLICIT opt-in path only:
+  # the implicit PAT-present default already self-disables when the PAT is
+  # missing, so no diagnostic is needed there.
   # ---------------------------------------------------------------------------
   preflight:
     name: Preflight (PAT mode)
@@ -113,8 +145,12 @@ jobs:
       - id: mode
         name: Resolve advanced PAT mode
         env:
-          INPUT_ADVANCED: ${{ github.event_name == 'workflow_dispatch' && inputs.advanced_scanning && 'true' || '' }}
-          INPUT_REQUIRE_PAT: ${{ github.event_name == 'workflow_dispatch' && inputs.require_pat && 'true' || '' }}
+          # `format('{0}', bool)` yields literal 'true'/'false' so the
+          # bash side can distinguish explicit opt-OUT from "no opinion";
+          # the earlier `&& 'true' || ''` form collapsed `false` and
+          # "not workflow_dispatch" into the same empty string.
+          INPUT_ADVANCED: ${{ github.event_name == 'workflow_dispatch' && format('{0}', inputs.advanced_scanning) || '' }}
+          INPUT_REQUIRE_PAT: ${{ github.event_name == 'workflow_dispatch' && format('{0}', inputs.require_pat) || '' }}
           VAR_ADVANCED: ${{ vars['BOS_SCAN_ADVANCED'] }}
           VAR_REQUIRE_PAT: ${{ vars['BOS_SCAN_REQUIRE_PAT'] }}
           HAS_PAT: ${{ secrets['SCANNING_PAT'] != '' && 'true' || 'false' }}
@@ -128,17 +164,43 @@ jobs:
             esac
           }
 
+          is_false() {
+            case "${1:-}" in
+              false|FALSE|False|0|no|NO|off|OFF) return 0 ;;
+              *) return 1 ;;
+            esac
+          }
+
+          # Layer 1: implicit PAT-present default.
           advanced_requested=false
-          if [ -n "${INPUT_ADVANCED}" ]; then
-            advanced_requested=true
-          elif is_true "${VAR_ADVANCED}"; then
+          if [ "${HAS_PAT}" = "true" ]; then
             advanced_requested=true
           fi
 
+          # Layer 2: repo/org var explicit override.
+          if is_true "${VAR_ADVANCED}"; then
+            advanced_requested=true
+          elif is_false "${VAR_ADVANCED}"; then
+            advanced_requested=false
+          fi
+
+          # Layer 3: workflow_dispatch input explicit override.
+          if is_true "${INPUT_ADVANCED}"; then
+            advanced_requested=true
+          elif is_false "${INPUT_ADVANCED}"; then
+            advanced_requested=false
+          fi
+
+          # Did the operator *explicitly* opt in (input or var)? Used
+          # only for the `require_pat` fail-fast diagnostic — the
+          # implicit PAT-present default does not trigger it.
+          explicitly_requested=false
+          if is_true "${INPUT_ADVANCED}" || is_true "${VAR_ADVANCED}"; then
+            explicitly_requested=true
+          fi
+
           require_pat=false
-          if [ -n "${INPUT_REQUIRE_PAT}" ]; then
-            require_pat=true
-          elif is_true "${VAR_REQUIRE_PAT}"; then
+          if is_true "${INPUT_REQUIRE_PAT}" || is_true "${VAR_REQUIRE_PAT}"; then
             require_pat=true
           fi
 
@@ -147,16 +209,29 @@ jobs:
             use_advanced_pat=true
           fi
 
-          if [ "${advanced_requested}" = "true" ] && [ "${HAS_PAT}" != "true" ] && [ "${require_pat}" = "true" ]; then
-            echo "::error::Advanced scanning was requested, but secret SCANNING_PAT is not configured."
+          if [ "${explicitly_requested}" = "true" ] && [ "${HAS_PAT}" != "true" ] && [ "${require_pat}" = "true" ]; then
+            echo "::error::Advanced scanning was explicitly requested (input or BOS_SCAN_ADVANCED=true), but secret SCANNING_PAT is not configured."
             exit 1
           fi
 
-          if [ "${advanced_requested}" = "true" ] && [ "${HAS_PAT}" != "true" ]; then
-            echo "::warning::Advanced scanning requested but SCANNING_PAT is missing. Falling back to GITHUB_TOKEN (PS002/PS003 will be skipped)."
+          if [ "${explicitly_requested}" = "true" ] && [ "${HAS_PAT}" != "true" ]; then
+            echo "::warning::Advanced scanning explicitly requested but SCANNING_PAT is missing. Falling back to GITHUB_TOKEN (PS002/PS003 will be skipped)."
           fi
 
           echo "use_advanced_pat=${use_advanced_pat}" >> "${GITHUB_OUTPUT}"
+
+          # Surface which path was taken so operators can audit policy
+          # resolution from the run page without re-reading the YAML.
+          {
+            echo "## Code-scan preflight"
+            echo ""
+            echo "| Signal | Value |"
+            echo "|---|---|"
+            echo "| SCANNING_PAT present | \`${HAS_PAT}\` |"
+            echo "| BOS_SCAN_ADVANCED var | \`${VAR_ADVANCED:-(unset)}\` |"
+            echo "| advanced_scanning input | \`${INPUT_ADVANCED:-(n/a — non-dispatch)}\` |"
+            echo "| → use_advanced_pat | **\`${use_advanced_pat}\`** |"
+          } >> "${GITHUB_STEP_SUMMARY:-/dev/stderr}"
 
   # ---------------------------------------------------------------------------
   # Consolidated scan: kit composite + CodeQL matrix, both via the hub
@@ -186,6 +261,7 @@ jobs:
       enable_upload:        true
       fail_on:              ${{ inputs.fail_on || 'never' }}
       use_advanced_pat:     ${{ needs.preflight.outputs.use_advanced_pat == 'true' }}
+      kit_http_timeout:     ${{ inputs.http_timeout || '20' }}
       codeql_languages:     '["python", "actions"]'
       codeql_queries:       security-and-quality
     secrets: inherit

@@ -119,6 +119,11 @@ name: Security scan
         required: false
         type: boolean
         default: false
+      http_timeout:
+        description: 'Per-request HTTP timeout (seconds) for kit posture probes. Default 20. Bump on slow self-hosted egress or GH API latency spikes.'
+        required: false
+        type: string
+        default: '20'
 
 permissions:
   contents: read
@@ -225,6 +230,7 @@ jobs:
       enable_upload:        true
       fail_on:              ${{ inputs.fail_on || 'never' }}
       use_advanced_pat:     ${{ needs.preflight.outputs.use_advanced_pat == 'true' }}
+      kit_http_timeout:     ${{ inputs.http_timeout || '20' }}
       codeql_languages:     '["python", "actions"]'
       codeql_queries:       security-and-quality
     secrets: inherit

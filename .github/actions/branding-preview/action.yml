@@ -149,13 +149,23 @@ runs:
           echo "color=${COLOR}"
         } >> "${GITHUB_OUTPUT}"
 
+        # Inline the rendered card directly into the step summary as a
+        # base64-encoded `data:image/svg+xml` <img>. GitHub's step-summary
+        # sanitizer permits <img> with data URIs, so the reviewer sees the
+        # actual card without needing to download an artifact. The trailing
+        # descriptive block stays as a fallback for surfaces that strip
+        # the inline image (e.g. older PR-comment renderers).
+        # `base64 -w0` is GNU; macOS BSD `base64` ignores `-w` and already
+        # produces a single line, so we strip newlines defensively.
+        SVG_B64="$(base64 -w0 < "${OUT_PATH}" 2>/dev/null || base64 < "${OUT_PATH}" | tr -d '\n')"
+
         {
           echo "## Marketplace branding preview"
+          echo ""
+          echo "<img alt=\"Marketplace card (${ICON} on ${COLOR})\" width=\"256\" height=\"256\" src=\"data:image/svg+xml;base64,${SVG_B64}\">"
           echo ""
           echo "* Icon: \`${ICON}\` (feather ${FEATHER_REF})"
           echo "* Colour: \`${COLOR}\` (≈ ${BG})"
           echo ""
-          echo "Card written to \`${OUT_PATH}\`. Upload it as an artifact"
-          echo "(e.g. via \`actions/upload-artifact\`) to view in the run UI,"
-          echo "or post as an image in a PR comment."
+          echo "_Card written to \`${OUT_PATH}\` (also available as a workflow artifact if the caller uploaded it)._"
         } >> "${GITHUB_STEP_SUMMARY:-/dev/stderr}"

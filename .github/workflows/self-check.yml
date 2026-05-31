@@ -63,7 +63,13 @@ jobs:
     # so this expression has no fallback — see the hub's README
     # ("Runner resolution") for the full rationale.
     runs-on: ${{ fromJSON(startsWith(vars.DEFAULT_RUNNER, '[') && vars.DEFAULT_RUNNER || format('"{0}"', vars.DEFAULT_RUNNER)) }}
-    timeout-minutes: 5
+    # 10 (was 5). Cold-cache `actions/setup-python` alone can eat 2-3min
+    # on a fresh runner image; this composite then does ~30s of
+    # community-health REST + ~15s of inputs validation. 5 was tight
+    # enough that a cold-cache + slow-API run could blow the wall during
+    # post-job teardown and surface as `cancelled` (the same pattern that
+    # bit tests.yml in run 26713202689). Defensive bump.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -158,7 +164,12 @@ jobs:
     # so this expression has no fallback — see the hub's README
     # ("Runner resolution") for the full rationale.
     runs-on: ${{ fromJSON(startsWith(vars.DEFAULT_RUNNER, '[') && vars.DEFAULT_RUNNER || format('"{0}"', vars.DEFAULT_RUNNER)) }}
-    timeout-minutes: 5
+    # 10 (was 5). The external Marketplace search endpoint has known
+    # variable latency (frequently 30-60s, occasionally minutes when GH
+    # backend is under load); add cold-cache setup-python on top and the
+    # 5-min wall is genuinely reachable. Same defensive pattern as the
+    # `check` job above.
+    timeout-minutes: 10
     # Run on PRs (default) and on manual dispatch when explicitly
     # requested. Skip on plain dev pushes — the external Marketplace
     # search has variable latency and isn't worth the noise.
@@ -232,7 +243,10 @@ jobs:
     # so this expression has no fallback — see the hub's README
     # ("Runner resolution") for the full rationale.
     runs-on: ${{ fromJSON(startsWith(vars.DEFAULT_RUNNER, '[') && vars.DEFAULT_RUNNER || format('"{0}"', vars.DEFAULT_RUNNER)) }}
-    timeout-minutes: 5
+    # 10 (was 5). Four linters back-to-back (markdownlint + yamllint +
+    # shellcheck + actionlint) plus their individual setup paths; on a
+    # cold runner this typically lands around 3-4min. Bump for headroom.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:

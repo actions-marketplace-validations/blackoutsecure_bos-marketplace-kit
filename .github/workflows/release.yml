@@ -1143,6 +1143,7 @@ jobs:
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO:     ${{ github.repository }}
           TAG:      ${{ needs.promote.outputs.tag_name }}
           NAME:     ${{ inputs.release_name }}
           DRAFT:    ${{ inputs.release_draft }}
@@ -1154,23 +1155,58 @@ jobs:
 
           # Detect pre-release suffix (vX.Y.Z-rc.1, vX.Y.Z-beta, etc.)
           prerelease_flag=""
+          prerelease_label="false"
           case "${TAG}" in
-            *-*) prerelease_flag="--prerelease" ;;
+            *-*) prerelease_flag="--prerelease"; prerelease_label="true" ;;
           esac
 
           draft_flag=""
+          draft_label="false"
           case "${DRAFT}" in
-            true) draft_flag="--draft" ;;
+            true) draft_flag="--draft"; draft_label="true" ;;
           esac
 
+          # `gh release create` prints the canonical release URL on stdout;
+          # capture it so the step summary can link straight to the page.
           # shellcheck disable=SC2086
-          gh release create "${TAG}" \
+          release_url="$(gh release create "${TAG}" \
             --target "${TARGET}" \
             --title "${title}" \
             --generate-notes \
-            ${prerelease_flag} ${draft_flag}
+            ${prerelease_flag} ${draft_flag})"
 
-          echo "Release created: ${TAG}"
+          echo "Release created: ${TAG} -> ${release_url}"
+
+          # Pull the auto-generated body back out so it can be embedded
+          # in the step summary collapsed by default. Failure to fetch
+          # is non-fatal (the release itself is already created).
+          body=""
+          if ! body="$(gh release view "${TAG}" --repo "${REPO}" --json body --jq '.body' 2>/dev/null)"; then
+            body=""
+          fi
+
+          {
+            echo "## GitHub Release"
+            echo ""
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            echo "| Tag | [\`${TAG}\`](https://github.com/${REPO}/releases/tag/${TAG}) |"
+            echo "| Title | ${title} |"
+            echo "| Target SHA | [\`${TARGET:0:7}\`](https://github.com/${REPO}/commit/${TARGET}) |"
+            echo "| Prerelease | ${prerelease_label} |"
+            echo "| Draft | ${draft_label} |"
+            echo "| Release page | ${release_url:-_(not returned by \`gh\`)_} |"
+            echo ""
+            if [ -n "${body}" ]; then
+              echo "<details><summary>Auto-generated release notes</summary>"
+              echo ""
+              printf '%s\n' "${body}"
+              echo ""
+              echo "</details>"
+            else
+              echo "_Auto-generated release notes could not be fetched; see the release page._"
+            fi
+          } >> "${GITHUB_STEP_SUMMARY}"
 
   repo-metadata:
     name: Sync repo About box

@@ -77,30 +77,118 @@ jobs:
         with:
           persist-credentials: false
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        id: setup-python
         with:
           python-version: '3.11'
       - name: Install
+        id: install
         run: |
           set -euo pipefail
           if [ -f pyproject.toml ]; then
             python -m pip install --upgrade pip
             python -m pip install -e ".[dev]"
+            echo "ran=true" >> "$GITHUB_OUTPUT"
           else
             echo "No pyproject.toml — skipping CLI smoke."
+            echo "ran=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
       - name: Import + CLI smoke
+        id: smoke
         run: |
           set -euo pipefail
           if [ -f pyproject.toml ]; then
-            python -c "import marketplace_kit; print(marketplace_kit.__version__)"
+            ver="$(python -c 'import marketplace_kit; print(marketplace_kit.__version__)')"
+            echo "package_version=${ver}" >> "$GITHUB_OUTPUT"
+            echo "marketplace_kit ${ver}"
             marketplace-kit --help
+            echo "ran=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ran=false" >> "$GITHUB_OUTPUT"
           fi
       - name: pytest
+        id: pytest
         run: |
           set -euo pipefail
           if [ -d tests ] && [ -f pyproject.toml ]; then
-            python -m pytest -q
+            python -m pytest -q --junitxml=pytest-results.xml
+            echo "ran=true" >> "$GITHUB_OUTPUT"
           else
             echo "No tests yet — skipping."
+            echo "ran=false" >> "$GITHUB_OUTPUT"
+          fi
+      # Always-run job summary. Surfaces step outcomes, pytest counts
+      # parsed from the JUnit XML, total duration, and any failure
+      # names — visible in the Actions UI under the run's Summary tab
+      # without having to dig through raw logs.
+      - name: Job summary
+        if: always()
+        env:
+          STEP_INSTALL:   ${{ steps.install.outcome }}
+          STEP_SMOKE:     ${{ steps.smoke.outcome }}
+          STEP_PYTEST:    ${{ steps.pytest.outcome }}
+          PKG_VERSION:    ${{ steps.smoke.outputs.package_version }}
+          PYTHON_VERSION: ${{ steps.setup-python.outputs.python-version }}
+          PYTEST_RAN:     ${{ steps.pytest.outputs.ran }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## Test · Python CLI"
+            echo ""
+            echo "**Package:** \`bos-marketplace-kit\` ${PKG_VERSION:+v${PKG_VERSION}}"
+            echo "**Python:** ${PYTHON_VERSION:-unknown}"
+            echo "**Trigger:** \`${GITHUB_EVENT_NAME}\` on \`${GITHUB_REF_NAME}\` (${GITHUB_SHA:0:7})"
+            echo ""
+            echo "### Step outcomes"
+            echo ""
+            echo "| Step | Outcome |"
+            echo "|---|---|"
+            echo "| Install (\`pip install -e .[dev]\`) | ${STEP_INSTALL:-skipped} |"
+            echo "| Import + CLI smoke (\`marketplace-kit --help\`) | ${STEP_SMOKE:-skipped} |"
+            echo "| pytest | ${STEP_PYTEST:-skipped} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "${PYTEST_RAN}" = "true" ] && [ -f pytest-results.xml ]; then
+            python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import xml.etree.ElementTree as ET
+
+          tree = ET.parse("pytest-results.xml")
+          root = tree.getroot()
+          suites = root.findall("testsuite") if root.tag == "testsuites" else [root]
+
+          tests = sum(int(s.get("tests", 0)) for s in suites)
+          failures = sum(int(s.get("failures", 0)) for s in suites)
+          errors = sum(int(s.get("errors", 0)) for s in suites)
+          skipped = sum(int(s.get("skipped", 0)) for s in suites)
+          duration = sum(float(s.get("time", 0)) for s in suites)
+          passed = tests - failures - errors - skipped
+
+          print()
+          print("### pytest results")
+          print()
+          print("| Metric | Count |")
+          print("|---|---:|")
+          print(f"| Total    | {tests} |")
+          print(f"| Passed   | {passed} |")
+          print(f"| Failed   | {failures} |")
+          print(f"| Errors   | {errors} |")
+          print(f"| Skipped  | {skipped} |")
+          print(f"| Duration | {duration:.2f}s |")
+
+          bad = []
+          for s in suites:
+              for c in s.iter("testcase"):
+                  if c.find("failure") is not None or c.find("error") is not None:
+                      bad.append(f"{c.get('classname','?')}::{c.get('name','?')}")
+          if bad:
+              print()
+              print("### Failures / errors")
+              print()
+              for name in bad:
+                  print(f"- `{name}`")
+          PY
+          else
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "_pytest did not run (no \`tests/\` or no \`pyproject.toml\`)._" \
+              >> "$GITHUB_STEP_SUMMARY"
           fi

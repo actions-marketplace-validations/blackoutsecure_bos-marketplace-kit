@@ -14,6 +14,7 @@ htmlcov/
 .tox/
 .venv/
 venv/
+pytest-results.xml
 
 # Node (if anyone vendors deps for testing)
 node_modules/

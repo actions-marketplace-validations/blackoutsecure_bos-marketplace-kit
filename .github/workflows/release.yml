@@ -97,12 +97,16 @@ name: Release · promote dev → main + tag + publish
           Skip the post-release repo `About` box sync
           (`repo-metadata` composite). Off by default — every
           successful release refreshes description / topics /
-          sidebar widgets from the just-promoted README using
-          `secrets.REPO_ADMIN_PAT`. Set `true` for release
+          sidebar widgets from the just-promoted README. The job
+          uses `secrets.REPO_ADMIN_PAT` when set and otherwise
+          falls back to `secrets.RELEASE_PAT` (the single-PAT path
+          most operators want — `RELEASE_PAT` already needs the
+          classic `repo` scope, which covers the metadata sync's
+          Administration writes too). Set `true` for release
           experiments where you do not want the live About box
           mutated, or when iterating on the metadata pipeline
           itself. The job also auto-skips (with a notice) when
-          `REPO_ADMIN_PAT` is unset.
+          neither `REPO_ADMIN_PAT` nor `RELEASE_PAT` is configured.
         required: false
         type: boolean
         default: false
@@ -1147,7 +1151,8 @@ jobs:
     # skips on `dry_run` or when `promote.promoted != 'true'`, so a
     # success here is the right "a tag now exists on origin" signal.
     # The `!cancelled()` guard keeps the explicit job-level skip
-    # (REPO_ADMIN_PAT missing) distinct from upstream cancellation.
+    # (no metadata-sync PAT configured) distinct from upstream
+    # cancellation.
     if: ${{ !cancelled() && needs.release.result == 'success' && !inputs.skip_repo_metadata }}
     # Resolves `vars.DEFAULT_RUNNER` (bare label or JSON-array string).
     # Both presence and shape are enforced by `preflight-runner-config`,
@@ -1169,32 +1174,45 @@ jobs:
       # The composite PATCHes /repos/{owner}/{repo} + PUTs the topics
       # endpoint, both of which require `Administration: write`. The
       # default GITHUB_TOKEN (even with contents:write) is rejected by
-      # GitHub on those endpoints. RELEASE_PAT is the wrong scope here
-      # — it grants Contents:Write for the promote push but does not
-      # imply Administration. Keep the two PATs separated: REPO_ADMIN_PAT
-      # is the documented secret name in README § "Repo About box sync".
+      # GitHub on those endpoints.
       #
-      # When the secret is unset we skip with a notice rather than fail
-      # the release — the tag + GitHub Release are already published
-      # at this point, so the metadata refresh is a soft post-step.
+      # Token resolution order:
+      #   1. `secrets.REPO_ADMIN_PAT` — explicit override for
+      #      operators who want the metadata sync's blast radius
+      #      isolated from the release push (fine-grained PAT scoped
+      #      to Administration:Write only).
+      #   2. `secrets.RELEASE_PAT` — the default single-PAT path.
+      #      For classic PATs the `repo` scope already grants every
+      #      API surface this job uses, so the two secrets carry
+      #      identical authority; for fine-grained PATs operators
+      #      just add Administration:Write to the same token that
+      #      already holds Contents:Write.
+      #
+      # When neither secret is set we skip with a notice rather than
+      # fail the release — the tag + GitHub Release are already
+      # published at this point, so the metadata refresh is a soft
+      # post-step.
       # ----------------------------------------------------------------
       - id: token-check
-        name: Check REPO_ADMIN_PAT availability
+        name: Resolve metadata sync token
         env:
-          HAS_PAT: ${{ secrets.REPO_ADMIN_PAT != '' && 'true' || 'false' }}
+          HAS_PAT: ${{ (secrets.REPO_ADMIN_PAT != '' || secrets.RELEASE_PAT != '') && 'true' || 'false' }}
+          PAT_SOURCE: ${{ secrets.REPO_ADMIN_PAT != '' && 'REPO_ADMIN_PAT' || (secrets.RELEASE_PAT != '' && 'RELEASE_PAT' || 'none') }}
         run: |
           set -euo pipefail
           if [ "${HAS_PAT}" != "true" ]; then
             {
               echo "## Repo metadata sync"
               echo ""
-              echo "Skipped — \`secrets.REPO_ADMIN_PAT\` is not configured."
+              echo "Skipped — neither \`secrets.REPO_ADMIN_PAT\` nor \`secrets.RELEASE_PAT\` is configured."
               echo ""
               echo "The release published successfully; the public \`About\` box was not refreshed."
               echo ""
-              echo "To enable post-release metadata sync, provision a fine-grained PAT with **Administration: Read & Write** (and **Metadata: Read-only**) on this repo, then add it as the \`REPO_ADMIN_PAT\` repository secret. See README § 'Repo About box sync (repo-metadata)'."
+              echo "To enable post-release metadata sync, provision a PAT that grants Administration writes on this repo and add it as the \`RELEASE_PAT\` repository secret (single-PAT path) — or as the \`REPO_ADMIN_PAT\` secret when you specifically want the metadata sync's blast radius separated from the release push. See README § 'Repo About box sync (repo-metadata)' and § 'Step 5b — Tokens, secrets, and variables'."
             } >> "${GITHUB_STEP_SUMMARY}"
-            echo "::notice title=Repo metadata sync skipped::REPO_ADMIN_PAT secret not configured; release succeeded but the public About box was not refreshed. Provision a fine-grained PAT with Administration:Write to enable."
+            echo "::notice title=Repo metadata sync skipped::No metadata-sync PAT configured (neither REPO_ADMIN_PAT nor RELEASE_PAT); release succeeded but the public About box was not refreshed."
+          else
+            echo "::notice title=Repo metadata sync token::Using \`secrets.${PAT_SOURCE}\` for repo-metadata PATCH/PUT calls."
           fi
           echo "has_pat=${HAS_PAT}" >> "${GITHUB_OUTPUT}"
 
@@ -1212,7 +1230,7 @@ jobs:
         name: Sync About box (description / topics / widgets)
         uses: ./.github/actions/repo-metadata
         with:
-          github_token: ${{ secrets.REPO_ADMIN_PAT }}
+          github_token: ${{ secrets.REPO_ADMIN_PAT || secrets.RELEASE_PAT }}
           # description: omitted — the composite rewrites the README
           # lead paragraph via GitHub Models (falls back to the raw
           # README seed when the AI call fails).

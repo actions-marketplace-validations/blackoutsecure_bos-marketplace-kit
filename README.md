@@ -579,7 +579,14 @@ Defaults are framed around "this is a release":
 
 Tokens: the standard `${{ github.token }}` is **not** enough — this
 composite PATCHes the repo and needs `Administration: write`. Pass a
-fine-grained PAT or an installation token in `github_token`.
+fine-grained PAT or an installation token in `github_token`. In the
+kit's own [release.yml](.github/workflows/release.yml) this comes
+from `secrets.REPO_ADMIN_PAT` when set, otherwise from
+`secrets.RELEASE_PAT` — see
+[Step 5b — Tokens, secrets, and variables](#step-5b--tokens-secrets-and-variables)
+for the full token contract and the
+[single-PAT vs separate-PATs](#single-pat-default-vs-separate-pats-advanced)
+decision.
 
 #### Fully explicit (no AI)
 
@@ -596,7 +603,10 @@ jobs:
       - uses: actions/checkout@v5
       - uses: blackoutsecure/bos-marketplace-kit/.github/actions/repo-metadata@v1
         with:
-          github_token: ${{ secrets.REPO_ADMIN_PAT }}
+          # RELEASE_PAT is the default; REPO_ADMIN_PAT is honoured
+          # first when set (advanced blast-radius separation). See
+          # Step 5b — Tokens, secrets, and variables.
+          github_token: ${{ secrets.REPO_ADMIN_PAT || secrets.RELEASE_PAT }}
           description: 'Lint, gate, and publish GitHub Marketplace Actions — without the boilerplate.'
           homepage:    'https://github.com/marketplace/actions/blackout-secure-marketplace-kit'
           topics:      'github-actions marketplace devops linting branch-protection'
@@ -621,8 +631,10 @@ jobs:
       - uses: actions/checkout@v5
       - uses: blackoutsecure/bos-marketplace-kit/.github/actions/repo-metadata@v1
         with:
-          # Admin PAT — default GITHUB_TOKEN cannot PATCH repo metadata.
-          github_token: ${{ secrets.REPO_ADMIN_PAT }}
+          # Admin-capable PAT — default GITHUB_TOKEN cannot PATCH repo
+          # metadata. RELEASE_PAT is the default; REPO_ADMIN_PAT wins
+          # when set (advanced blast-radius separation). See Step 5b.
+          github_token: ${{ secrets.REPO_ADMIN_PAT || secrets.RELEASE_PAT }}
           homepage: 'https://github.com/marketplace/actions/my-cool-action'
           generate_topics: 'true'
           topics_fallback: 'github-actions devops marketplace'
@@ -721,10 +733,15 @@ The release workflow:
 4. Creates a GitHub Release on the new tag.
 5. Refreshes the repo `About` box (description / topics / sidebar
    widgets) via the bundled `repo-metadata` composite — soft step,
-   gated on `secrets.REPO_ADMIN_PAT` being set. When the secret is
-   absent the job auto-skips with a notice (the release itself is
+   gated on at least one of `secrets.REPO_ADMIN_PAT` /
+   `secrets.RELEASE_PAT` being set. The job prefers
+   `REPO_ADMIN_PAT` when explicitly configured (advanced
+   blast-radius separation) and otherwise falls back to
+   `RELEASE_PAT` (the default single-PAT path). When neither secret
+   is set the job auto-skips with a notice — the release itself is
    already published and a failed metadata sync should not roll it
-   back). Suppress with `skip_repo_metadata: true` on dispatch.
+   back. Suppress unconditionally with `skip_repo_metadata: true`
+   on dispatch.
 
 ### Step 5b — Tokens, secrets, and variables
 
@@ -739,7 +756,7 @@ for anyone copying that template into another repo.
 |-------|-----------|----------|----------|----------------------|-----|
 | `secrets.GITHUB_TOKEN` | **Mandatory** (auto-provided by Actions) | `github-actions[bot]` (Integration App ID `15368`) | `actions/checkout`, default `git push` to `main` + tag, `gh release create`, all `gh api` probes (FUNDING resolver) | Job-level `permissions: { contents: write }` on the `promote` job; `contents: write` on the `release` job for the GitHub Release create. | Cannot be disabled. Every workflow run is auto-issued one per job (TTL = job lifetime). Without it, `actions/checkout` cannot clone, `gh api` cannot authenticate, and the workflow simply cannot run. There is no "off" mode. |
 | `secrets.RELEASE_PAT` | Optional (opt-in) | The PAT owner (user) or the GitHub App backing a fine-grained PAT | Same push as above, when `GITHUB_TOKEN` cannot satisfy branch protection | **Fine-grained (recommended):** Contents = Read & Write on the action repo, Metadata = Read-only. **Classic:** the `repo` scope (see [classic PAT specifics (RELEASE_PAT)](#classic-pat-specifics-release_pat) below for the explicit checkbox list). | Only needed when `main` is locked behind a ruleset or classic protection that `GITHUB_TOKEN` cannot bypass. The PAT's identity (or its backing App) MUST be listed in the ruleset's `bypass_actors`. The resolver probes `/user` (validity), `repos/<repo>.permissions.push` (identity), AND `POST /repos/<repo>/git/blobs` (token scope) BEFORE checkout and fails the job with a remediation hint on any misconfiguration — silent fallback would hide operator intent. When unset, the resolver emits a notice and falls through to `GITHUB_TOKEN`. |
-| `secrets.REPO_ADMIN_PAT` | Optional (opt-in) | The PAT owner (user) or the GitHub App backing a fine-grained PAT | Post-release `repo-metadata` composite: PATCH `/repos/{owner}/{repo}` (description / homepage / sidebar widgets) + PUT `/repos/{owner}/{repo}/topics` | **Fine-grained (recommended):** Administration = Read & Write AND Metadata = Read-only on the action repo. **Classic:** the `repo` scope (see [classic PAT specifics (REPO_ADMIN_PAT)](#classic-pat-specifics-repo_admin_pat) below for the explicit checkbox list). Classic does not currently include an Administration-write granular scope, so fine-grained is strongly preferred here when org policy allows it. | The default `GITHUB_TOKEN` (even with `contents: write`) cannot PATCH repo administration fields or write topics. RELEASE_PAT covers Contents:Write for the promote push but does not imply Administration. Keep the two PATs separated so the metadata sync's blast radius is auditable independently of the release push. When unset, the `repo-metadata` job auto-skips with a notice — the release itself still publishes. |
+| `secrets.REPO_ADMIN_PAT` | Optional (advanced; not needed for the single-PAT path) | The PAT owner (user) or the GitHub App backing a fine-grained PAT | Post-release `repo-metadata` composite: PATCH `/repos/{owner}/{repo}` (description / homepage / sidebar widgets) + PUT `/repos/{owner}/{repo}/topics`. **Only consulted when explicitly set** — if unset, the job falls back to `RELEASE_PAT` (which already has the same authority for classic PATs, and the same authority for fine-grained PATs once you add `Administration: Read & Write` to it). | **Fine-grained:** Administration = Read & Write AND Metadata = Read-only on the action repo. **Classic:** the `repo` scope — same checkbox list as `RELEASE_PAT` (see [classic PAT specifics (RELEASE_PAT)](#classic-pat-specifics-release_pat)). Classic does not have a granular Administration-write scope. | Provision this only when you want the metadata sync's blast radius isolated from the release push — a fine-grained PAT scoped purely to `Administration:Write` (no Contents:Write) writes the About box but cannot push code, so a leak cannot create a malicious release. Most operators do not need this and should use the single-PAT path described under [Single-PAT default vs separate-PATs (advanced)](#single-pat-default-vs-separate-pats-advanced). |
 
 ##### Classic PAT specifics (`RELEASE_PAT`)
 
@@ -797,67 +814,53 @@ trail requires the release commit + tag to be attributed to a human
 identity, or when a ruleset's `bypass_actors` explicitly names the
 PAT owner.
 
-##### Classic PAT specifics (`REPO_ADMIN_PAT`)
+##### Single-PAT default vs separate-PATs (advanced)
 
-Created at <https://github.com/settings/tokens> → **Generate new
-token (classic)**. Fine-grained is strongly preferred for this PAT
-(it can scope Administration to a single repo); use classic only
-when org policy disables fine-grained PATs entirely. The classic
-`repo` scope is the smallest unit that grants the two API surfaces
-the `repo-metadata` composite calls: `PATCH /repos/{owner}/{repo}`
-(description, homepage, sidebar widgets) and
-`PUT /repos/{owner}/{repo}/topics`.
+The `repo-metadata` job needs `Administration: write` on the action
+repo, which `GITHUB_TOKEN` cannot grant. There are two operator
+shapes for supplying that authority — pick one:
 
-**Required (tick exactly these):**
+**Single-PAT path (recommended for almost everyone).** Configure
+`RELEASE_PAT` only and reuse it for the metadata sync. The workflow
+does this automatically when `REPO_ADMIN_PAT` is unset.
 
-| Scope (top-level) | Tick? | Why |
-|---|---|---|
-| `repo` (Full control of private repositories) | ✅ **Yes** | Classic has no granular Administration-write scope. The top-level `repo` scope auto-selects `repo:status`, `repo_deployment`, `public_repo`, `repo:invite`, and `security_events`, and is what authorizes both the `PATCH /repos/{owner}/{repo}` admin field write and the `PUT /repos/{owner}/{repo}/topics` topic replace. Nothing smaller works in classic. |
+* **Classic:** the `repo` scope is the smallest unit GitHub offers
+  and it already grants every API surface both jobs use —
+  `git push` to `main` + tag (release) AND `PATCH /repos/{}` plus
+  `PUT /repos/{}/topics` (metadata sync). A second classic PAT with
+  the same `repo` scope adds zero isolation — it is the same
+  authority duplicated, with double the rotation, SAML
+  authorization, and leak surface.
+* **Fine-grained:** issue one PAT with **Contents: Read & Write**
+  + **Administration: Read & Write** + **Metadata: Read-only** on
+  the action repo. The release push uses Contents, the metadata
+  sync uses Administration, both share the same PAT.
+* Result: one secret to rotate, one SAML authorization to maintain,
+  one identity in the audit trail.
 
-**Do NOT tick (over-scoped for this PAT's single job):**
+**Separate-PATs path (advanced; fine-grained only).** Provision
+`REPO_ADMIN_PAT` as a second fine-grained PAT scoped to
+**Administration: Read & Write** (and Metadata: Read-only) but
+**without Contents: Write**. Keep `RELEASE_PAT` scoped to just
+Contents + Metadata. The workflow honours `REPO_ADMIN_PAT` first
+when it is set.
 
-| Scope | Why not |
-|---|---|
-| `workflow` | `repo-metadata` never touches `.github/workflows/**`; it only PATCHes repo fields and PUTs topics. |
-| `admin:org`, `write:org`, `read:org`, `manage_runners:org` | Org admin is not needed to edit a single repo's About box. |
-| `admin:enterprise`, `manage_runners:enterprise`, `manage_billing:enterprise`, `read:enterprise`, `scim:enterprise` | Enterprise-level access is never required for per-repo metadata. |
-| `delete_repo`, `delete:packages` | Destructive scopes irrelevant to metadata sync. |
-| `admin:public_key`, `admin:repo_hook`, `admin:org_hook` | Not used. |
-| `gist`, `notifications`, `user`, `write:discussion`, `read:discussion` | Not used. |
-| `audit_log`, `codespace`, `project`, `copilot`, `read:packages`, `write:packages` | Not used. |
+* Why bother: a leak of `RELEASE_PAT` can push code but cannot
+  rename the repo, flip visibility, or change branch protection.
+  A leak of `REPO_ADMIN_PAT` can mutate repo settings but cannot
+  push code or tags. Useful when those blast radii need to be
+  rotated independently or attributed to different humans in the
+  audit log.
+* Why NOT bother for classic: classic has no granular
+  Administration scope. Both PATs would need `repo`, which carries
+  Contents:Write transitively — so the separation is theatre.
+  Stick to the single-PAT path with classic.
 
-**SAML SSO authorize (mandatory for `blackoutsecure` and any other
-SAML-enforced org):**
-
-1. On the token-create / token-edit page, under **"Configure SSO"**
-   next to the saved token, click *Authorize* for each SAML org
-   whose action repos this PAT will write to.
-2. Save. Without this, both `PATCH /repos/...` and
-   `PUT /repos/.../topics` return HTTP 403 with body `Resource
-   protected by organization SAML enforcement` and the
-   `repo-metadata` job fails with a SAML-specific remediation.
-
-**Expiration:** ≤ 90 days. Rotate on schedule — a leaked classic PAT
-with `repo` can write to every private repo the owner can see, not
-just the selected ones. The blast radius is much wider than a
-fine-grained PAT scoped to Administration on one repo, which is
-why fine-grained is preferred whenever org policy permits it.
-
-**Storage:** save as `REPO_ADMIN_PAT` under repo Settings → Secrets
-and variables → Actions → Secrets (not Variables — secrets are
-masked in logs). Keep this separate from `RELEASE_PAT` even if the
-same human owns both — the two cover different blast radii
-(Contents:Write vs Administration:Write) and rotating one should not
-disrupt the other.
-
-**Recommendation:** configure `REPO_ADMIN_PAT` only when you want
-the post-release `repo-metadata` step to actually mutate the
-About box. When unset, the step auto-skips with a notice and the
-release itself still publishes cleanly — so leaving it unset is a
-valid "opt out of automated metadata sync" stance. Set it once
-fine-grained (or, failing that, classic with the recipe above)
-when you want description / homepage / topics / sidebar widgets
-kept in lockstep with each release.
+When neither secret is set the metadata-sync job auto-skips with a
+notice; the release itself still publishes cleanly. Setting only
+`REPO_ADMIN_PAT` with no `RELEASE_PAT` is valid but unusual — you
+gain metadata sync but lose the protected-branch fallback the
+release push otherwise gets from `RELEASE_PAT`.
 
 #### Repository variables
 

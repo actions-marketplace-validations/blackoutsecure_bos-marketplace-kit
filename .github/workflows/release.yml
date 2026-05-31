@@ -660,6 +660,18 @@ jobs:
       # fallback to GITHUB_TOKEN on a misconfigured PAT would hide
       # operator intent.
       # -------------------------------------------------------------------
+      - name: Open pre-promote checks digest
+        # Header for the success-row digest. Each downstream preflight
+        # step (resolve-token, resolve-funding, check-funding-alignment)
+        # appends a `:white_check_mark:` row here instead of emitting an
+        # informational `::notice::` annotation -- the annotation panel
+        # is reserved for warnings/errors the operator needs to action.
+        run: |
+          {
+            echo "## Pre-promote checks"
+            echo ""
+          } >> "${GITHUB_STEP_SUMMARY}"
+
       - id: resolve-token
         name: Resolve release token
         env:
@@ -671,7 +683,11 @@ jobs:
           set -euo pipefail
 
           if [ "${HAS_RELEASE_PAT}" != "true" ]; then
-            echo "::notice title=Release token::Using default GITHUB_TOKEN (RELEASE_PAT not configured). Identity: github-actions[bot] (App ID 15368), scoped by job permissions.contents=write."
+            # Plain log line (not `::notice::`) so the success path does not
+            # dirty the run's annotation panel. Re-surfaced as a row in the
+            # 'Pre-promote checks' step-summary digest below.
+            echo "Release token: using default GITHUB_TOKEN (RELEASE_PAT not configured). Identity: github-actions[bot] (App ID 15368), scoped by job permissions.contents=write."
+            echo "- :white_check_mark: **Release token** &mdash; default \`GITHUB_TOKEN\` (\`github-actions[bot]\`, App ID 15368), scoped by job permissions." >> "${GITHUB_STEP_SUMMARY}"
             {
               echo "token_kind=default"
               echo "token_identity=github-actions[bot]"
@@ -744,7 +760,12 @@ jobs:
           probe_sha="$(printf '%s' "${blob_resp}" | jq -r '.sha // ""')"
           echo "Write probe OK (created dangling blob ${probe_sha:0:7}, will be garbage-collected)."
 
-          echo "::notice title=Release token::Using RELEASE_PAT. Identity: ${login}. Push permission: confirmed on ${REPO}."
+          # Plain log + step-summary row (no `::notice::`) -- happy path,
+          # nothing for the operator to action; the annotation panel is
+          # reserved for warnings/errors. Aggregated by the digest step
+          # below into the 'Pre-promote checks' table.
+          echo "Release token: using RELEASE_PAT. Identity: ${login}. Push permission confirmed on ${REPO}."
+          echo "- :white_check_mark: **Release token** &mdash; PAT (\`${login}\`), push permission confirmed on \`${REPO}\`." >> "${GITHUB_STEP_SUMMARY}"
           {
             echo "token_kind=pat"
             echo "token_identity=${login}"
@@ -815,14 +836,18 @@ jobs:
           }
 
           if ! is_true "${FUNDING_ENABLED}"; then
-            echo "::notice title=FUNDING::Disabled via vars.BOS_FUNDING_ENABLED. Skipping .github/FUNDING.yml; no Sponsor button will appear on the Marketplace listing or the repo header."
+            # Intentional state -- not a warning, not actionable; surface
+            # in the digest table instead of the annotation panel.
+            echo "FUNDING: disabled via vars.BOS_FUNDING_ENABLED. Skipping .github/FUNDING.yml; no Sponsor button will appear on the Marketplace listing or the repo header."
+            echo "- :white_check_mark: **FUNDING** &mdash; disabled via \`vars.BOS_FUNDING_ENABLED\` (intentional; no Sponsor button)." >> "${GITHUB_STEP_SUMMARY}"
             emit false disabled 'disabled by vars.BOS_FUNDING_ENABLED'
             exit 0
           fi
 
           # --- Tier 1: per-repo override on dev (highest precedence) ---
           if gh api "repos/${REPO}/contents/.github/FUNDING.yml?ref=dev" >/dev/null 2>&1; then
-            echo "::notice title=FUNDING::Per-repo override present on dev (.github/FUNDING.yml). Will be promoted to main; overrides any org default."
+            echo "FUNDING: per-repo override present on dev (.github/FUNDING.yml). Will be promoted to main; overrides any org default."
+            echo "- :white_check_mark: **FUNDING** &mdash; per-repo override (\`.github/FUNDING.yml\` on dev) will be promoted to main." >> "${GITHUB_STEP_SUMMARY}"
             emit true per-repo 'per-repo override (.github/FUNDING.yml on dev)'
             exit 0
           fi
@@ -871,8 +896,9 @@ jobs:
             exit 0
           fi
 
-          # All checks passed — inheritance is wired up correctly.
-          echo "::notice title=FUNDING::Inherited from ${OWNER}/.github (path: ${found}). No per-repo override needed; Sponsor button serves the org default. .github/FUNDING.yml intentionally excluded from extra_allowlist_paths."
+          # All checks passed -- inheritance is wired up correctly.
+          echo "FUNDING: inherited from ${OWNER}/.github (path: ${found}). No per-repo override needed; Sponsor button serves the org default."
+          echo "- :white_check_mark: **FUNDING** &mdash; inherited from \`${OWNER}/.github/${found}\` (no per-repo override needed)." >> "${GITHUB_STEP_SUMMARY}"
           emit false inherited "org default (${OWNER}/.github/${found})"
 
       # -------------------------------------------------------------------
@@ -945,14 +971,16 @@ jobs:
 
           # --- Aligned: button on + serving links ---
           if [ "${has_sponsorships}" = "true" ] && [ "${link_count}" -gt 0 ]; then
-            echo "::notice title=Sponsorships::Aligned. Sponsor button is enabled and serves ${link_count} link(s). FUNDING source: ${FUNDING_STATUS}."
+            echo "Sponsorships: aligned. Sponsor button is enabled and serves ${link_count} link(s). FUNDING source: ${FUNDING_STATUS}."
+            echo "- :white_check_mark: **Sponsorships** &mdash; aligned (button on, ${link_count} link(s) served; source: \`${FUNDING_STATUS}\`)." >> "${GITHUB_STEP_SUMMARY}"
             emit true "${link_count}" aligned
             exit 0
           fi
 
           # --- Aligned-off: button off + no content intended ---
           if [ "${has_sponsorships}" != "true" ] && [ "${content_intended}" != "true" ]; then
-            echo "::notice title=Sponsorships::Aligned (off). Sponsor button is disabled and no FUNDING content is intended. Consistent state."
+            echo "Sponsorships: aligned (off). Sponsor button is disabled and no FUNDING content is intended. Consistent state."
+            echo "- :white_check_mark: **Sponsorships** &mdash; aligned (button off, no content intended)." >> "${GITHUB_STEP_SUMMARY}"
             emit false "${link_count}" aligned-off
             exit 0
           fi

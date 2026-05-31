@@ -46,10 +46,15 @@ description: >-
 inputs:
   repo:
     description: >-
-      Target repository in `owner/repo` form. Defaults to the current
-      repository (`${{ github.repository }}`).
+      Target repository in `owner/repo` form. Leave empty (default) to
+      resolve at runtime from `GITHUB_REPOSITORY` (i.e. the repo this
+      workflow runs in). Pass an explicit `owner/repo` only when
+      managing metadata on a *different* repo than the calling
+      workflow's. Composite-action input `default:` cannot reference
+      the `github` context, so the runtime resolution lives in the
+      step's `env:` block below.
     required: false
-    default: ${{ github.repository }}
+    default: ''
   github_token:
     description: >-
       Token used to PATCH the repository. Requires `repo` admin
@@ -203,7 +208,12 @@ runs:
     - id: run
       shell: bash
       env:
-        REPO:                ${{ inputs.repo }}
+        # `inputs.repo` is optional; fall back to the caller workflow's
+        # repository. The `||` resolution happens in the env block
+        # because composite-action `inputs.*.default:` cannot reference
+        # `github.*` (template-validation rejects it at action-load
+        # time; surfaces as `Unrecognized named-value: 'github'`).
+        REPO:                ${{ inputs.repo || github.repository }}
         GH_TOKEN:            ${{ inputs.github_token }}
         README_PATH:         ${{ inputs.readme_path }}
         DESCRIPTION:         ${{ inputs.description }}

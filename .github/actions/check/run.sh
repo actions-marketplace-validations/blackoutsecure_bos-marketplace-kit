@@ -851,7 +851,13 @@ if [ -z "${GH_TOKEN}" ]; then
 elif [ -z "${SAS_JSON}" ]; then
   rm_skip_all "repo metadata lookup failed -- token may lack \`metadata: read\`, or repo not found"
 else
-  # Extract description/homepage/topics from the single repo GET.
+  # Extract description/homepage/topics AND the home-page tab
+  # toggles (`has_issues`, `has_projects`, `has_wiki`, `has_pages`,
+  # `has_discussions`, `has_downloads`) from the single repo GET.
+  # The sidebar widget toggles (Releases / Deployments / Packages)
+  # are NOT exposed by `GET /repos/{owner}/{repo}` -- the
+  # `repo-metadata` composite writes them best-effort on release,
+  # but there's no read-side endpoint to confirm them here.
   # python3 is already a hard dep of this script.
   RM_FIELDS="$(printf '%s' "${SAS_JSON}" | python3 -c '
 import json, sys
@@ -862,19 +868,30 @@ except Exception:
 desc = d.get("description") or ""
 home = d.get("homepage") or ""
 topics = d.get("topics") or []
-# Emit on three lines: description (single line; collapse newlines),
-# homepage, then space-separated topics. Description is base64-safe-ish
-# by collapsing CR/LF; topic slugs cannot contain whitespace per
-# GitHub rules so a space delimiter is safe.
 desc = " ".join(desc.split())
+def b(k):
+    v = d.get(k)
+    return "true" if v else "false"
 print(desc)
 print(home)
 print(" ".join(t for t in topics if t))
+print(b("has_issues"))
+print(b("has_projects"))
+print(b("has_wiki"))
+print(b("has_pages"))
+print(b("has_discussions"))
+print(b("has_downloads"))
 ' 2>/dev/null || true)"
-  # Parse the three lines back out.
+  # Parse the lines back out.
   REPO_DESC="$(printf '%s\n' "${RM_FIELDS}" | sed -n '1p')"
   REPO_HOMEPAGE="$(printf '%s\n' "${RM_FIELDS}" | sed -n '2p')"
   REPO_TOPICS="$(printf '%s\n' "${RM_FIELDS}" | sed -n '3p')"
+  REPO_HAS_ISSUES="$(printf '%s\n' "${RM_FIELDS}" | sed -n '4p')"
+  REPO_HAS_PROJECTS="$(printf '%s\n' "${RM_FIELDS}" | sed -n '5p')"
+  REPO_HAS_WIKI="$(printf '%s\n' "${RM_FIELDS}" | sed -n '6p')"
+  REPO_HAS_PAGES="$(printf '%s\n' "${RM_FIELDS}" | sed -n '7p')"
+  REPO_HAS_DISCUSSIONS="$(printf '%s\n' "${RM_FIELDS}" | sed -n '8p')"
+  REPO_HAS_DOWNLOADS="$(printf '%s\n' "${RM_FIELDS}" | sed -n '9p')"
   REPO_DESC_LEN="${#REPO_DESC}"
   if [ -n "${REPO_TOPICS}" ]; then
     # shellcheck disable=SC2086
@@ -1019,6 +1036,31 @@ SORTED_REPORT="$(sort -t'|' -k1,1 "${REPORT_FILE}")"
     else
       echo "| Topics | _(none)_ |"
     fi
+
+    # Home-page tab toggles (readable via REST).
+    echo ""
+    echo "### Repo home-page tabs"
+    echo ""
+    echo "| Tab | Enabled |"
+    echo "|---|---|"
+    echo "| Issues       | \`${REPO_HAS_ISSUES:-unknown}\` |"
+    echo "| Projects     | \`${REPO_HAS_PROJECTS:-unknown}\` |"
+    echo "| Wiki         | \`${REPO_HAS_WIKI:-unknown}\` |"
+    echo "| Pages        | \`${REPO_HAS_PAGES:-unknown}\` |"
+    echo "| Discussions  | \`${REPO_HAS_DISCUSSIONS:-unknown}\` |"
+    echo "| Downloads    | \`${REPO_HAS_DOWNLOADS:-unknown}\` |"
+
+    # Sidebar widget toggles -- write-only on the REST surface.
+    # The `repo-metadata` composite PATCHes these on release
+    # (`show_releases` / `show_deployments` / `show_packages`)
+    # but `GET /repos/{owner}/{repo}` does not return them, so
+    # this section documents the intended convention rather
+    # than measuring the live state.
+    echo ""
+    echo "### Sidebar widgets (\"Include in the home page\")"
+    echo ""
+    # shellcheck disable=SC2006  # markdown backticks in literal string, not command substitution
+    echo "_The Releases / Deployments / Packages widget toggles are not exposed by the GitHub REST API. Set them via the [\`repo-metadata\`](https://github.com/blackoutsecure/bos-marketplace-kit#repo-about-box-sync-repo-metadata) composite on release (defaults: Releases on, Deployments off, Packages off) or in Settings → General._"
   fi
 
   echo ""

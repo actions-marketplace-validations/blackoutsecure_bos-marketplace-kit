@@ -1234,9 +1234,10 @@ jobs:
           # description: omitted — the composite rewrites the README
           # lead paragraph via GitHub Models (falls back to the raw
           # README seed when the AI call fails).
-          # homepage: omitted — leaves the existing Marketplace URL
-          # in the About box untouched. Pass an http(s) URL here to
-          # set it; pass `__unset__` to clear.
+          # Marketplace listing IS the canonical homepage for the
+          # kit -- pin it explicitly so RM003 passes and the About
+          # box always points at the current published listing.
+          homepage: 'https://github.com/marketplace/actions/blackout-secure-marketplace-kit'
           generate_topics: 'true'
           topics_fallback: 'github-actions marketplace devops linting branch-protection composite-action'
           # Defaults already match a release artefact: show_releases=true,

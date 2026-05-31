@@ -122,23 +122,22 @@ jobs:
           require_scorecard:            skip
           # RM### live About-box checks.
           # Kit ships the `repo-metadata` composite that auto-syncs
-          # these on release, but the kit's own release.yml does NOT
-          # call it yet (would need a PAT with `Administration: write`,
-          # which is a separate token-design decision from the existing
-          # `RELEASE_PAT` that only has `Contents: write`). Until that's
-          # wired up, the kit's own About box is hand-managed via
-          # Settings > General -- so:
+          # these on release. `release.yml`'s `repo-metadata` job
+          # now passes `homepage:` explicitly and asks for AI topic
+          # generation with a deterministic fallback, so every
+          # successful release refreshes all three fields.
+          #
           #   * RM001/RM002 (description): warn -- description IS set,
           #     this passes; we want the warning to fire on regression.
-          #   * RM003 (homepage): skip -- matches the kit default; the
-          #     Marketplace listing IS the kit's homepage and we don't
-          #     duplicate it in the About box.
-          #   * RM004/RM005 (topics): skip TEMPORARILY -- bump back to
-          #     `warn` once `repo-metadata` has been wired into release
-          #     OR topics have been set manually via Settings > General.
+          #   * RM003 (homepage): warn -- on after the first release
+          #     cycle that pins the Marketplace URL. Flip to `fail`
+          #     once a release has run with the new step.
+          #   * RM004/RM005 (topics): warn -- on after the first
+          #     release populates the topic list. Same fail-bump
+          #     story as RM003.
           require_repo_description:     warn
-          require_repo_homepage:        skip
-          require_repo_topics:          skip
+          require_repo_homepage:        warn
+          require_repo_topics:          warn
           # MP009 (no workflow files on default branch) is a soft-warn
           # the rule itself flags as 'noisy by design on dev'. The kit
           # IS the canonical case where dev legitimately holds workflows,

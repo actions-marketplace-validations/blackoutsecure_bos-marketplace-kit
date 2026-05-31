@@ -150,6 +150,7 @@ jobs:
 
           if [ "${PYTEST_RAN}" = "true" ] && [ -f pytest-results.xml ]; then
             python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import html
           import xml.etree.ElementTree as ET
 
           tree = ET.parse("pytest-results.xml")
@@ -175,20 +176,83 @@ jobs:
           print(f"| Skipped  | {skipped} |")
           print(f"| Duration | {duration:.2f}s |")
 
-          bad = []
+          # ---- Categorise every test case for the detail tables ----------
+          # JUnit-XML `<testcase>` has no explicit "passed" marker; pytest
+          # emits a bare `<testcase>` for a pass and embeds a `<failure>`,
+          # `<error>`, or `<skipped>` child otherwise. Classify accordingly,
+          # then render four collapsible <details> blocks (failures + errors
+          # auto-open so reviewers see them immediately; passed + skipped
+          # stay closed to keep the summary scannable).
+          rows_passed  = []
+          rows_failed  = []
+          rows_errors  = []
+          rows_skipped = []
+
           for s in suites:
               for c in s.iter("testcase"):
-                  if c.find("failure") is not None or c.find("error") is not None:
-                      bad.append(f"{c.get('classname','?')}::{c.get('name','?')}")
-          if bad:
+                  classname = c.get("classname", "?")
+                  name = c.get("name", "?")
+                  t = float(c.get("time", 0) or 0)
+                  full = f"{classname}::{name}"
+                  fail_el = c.find("failure")
+                  err_el = c.find("error")
+                  skip_el = c.find("skipped")
+                  if fail_el is not None:
+                      msg = (fail_el.get("message") or "").splitlines()[0][:160]
+                      rows_failed.append((full, t, msg))
+                  elif err_el is not None:
+                      msg = (err_el.get("message") or "").splitlines()[0][:160]
+                      rows_errors.append((full, t, msg))
+                  elif skip_el is not None:
+                      msg = (skip_el.get("message") or skip_el.text or "").splitlines()[0][:160]
+                      rows_skipped.append((full, t, msg))
+                  else:
+                      rows_passed.append((full, t))
+
+          def render_count_table(title, rows, open_by_default, with_message):
+              if not rows:
+                  return
+              # Sort slowest first so the summary doubles as a perf signal.
+              rows_sorted = sorted(rows, key=lambda r: -r[1])
+              open_attr = " open" if open_by_default else ""
               print()
-              print("### Failures / errors")
+              print(f"<details{open_attr}><summary><strong>{title}</strong> &mdash; {len(rows)} test(s)</summary>")
               print()
-              for name in bad:
-                  print(f"- `{name}`")
+              if with_message:
+                  print("| Test | Time | Message |")
+                  print("|---|---:|---|")
+                  for name, t, msg in rows_sorted:
+                      safe_name = html.escape(name)
+                      safe_msg = html.escape(msg) if msg else "&mdash;"
+                      print(f"| `{safe_name}` | {t:.3f}s | {safe_msg} |")
+              else:
+                  print("| Test | Time |")
+                  print("|---|---:|")
+                  for name, t in rows_sorted:
+                      safe_name = html.escape(name)
+                      print(f"| `{safe_name}` | {t:.3f}s |")
+              print()
+              print("</details>")
+
+          render_count_table("Failed",   rows_failed,  True,  True)
+          render_count_table("Errors",   rows_errors,  True,  True)
+          render_count_table("Skipped",  rows_skipped, False, True)
+          render_count_table("Passed",   rows_passed,  False, False)
           PY
           else
             echo "" >> "$GITHUB_STEP_SUMMARY"
             echo "_pytest did not run (no \`tests/\` or no \`pyproject.toml\`)._" \
               >> "$GITHUB_STEP_SUMMARY"
           fi
+      # Always-upload JUnit XML so reviewers can download the raw
+      # results from the run page (the in-summary tables are
+      # informative but truncated; the artifact is the source of
+      # truth for any external test-reporting integration).
+      - name: Upload JUnit XML
+        if: always() && steps.pytest.outputs.ran == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v5.0.0
+        with:
+          name: pytest-results
+          path: pytest-results.xml
+          if-no-files-found: warn
+          retention-days: 14

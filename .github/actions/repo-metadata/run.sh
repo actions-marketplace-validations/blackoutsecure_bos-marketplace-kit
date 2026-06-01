@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Marketplace repo-metadata sync — composite action body.
 #
-# Sourced into the calling shell by action.yml after lib.sh has been
-# loaded and ERR_TITLE has been set. Reads all inputs from env vars
-# (declared in action.yml's `env:` block) and emits GITHUB_OUTPUT
+# Run as a child process by action.yml (`bash run.sh`). All inputs are
+# inherited from the step's `env:` block; shared helpers are sourced
+# from lib.sh below (functions are NOT inherited across the `bash`
+# process boundary, so this script must source lib.sh itself — the
+# same pattern the sibling `check` action uses). Emits GITHUB_OUTPUT
 # rows + GITHUB_STEP_SUMMARY markdown.
 #
 # Flow:
@@ -19,6 +21,13 @@
 set -euo pipefail
 
 : "${ERR_TITLE:=Marketplace repo-metadata}"
+
+# Shared helpers (die / require_var / validate_bool / ...). Sourced here
+# rather than relying on action.yml's source line, because run.sh runs
+# in a child `bash` process that does not inherit the parent shell's
+# functions. lib.sh is resolved via the GHA-provided $GITHUB_ACTION_PATH.
+# shellcheck source=/dev/null
+. "${GITHUB_ACTION_PATH}/../_lib/lib.sh"
 
 HELPER_PY="${GITHUB_ACTION_PATH}/helper.py"
 [ -f "${HELPER_PY}" ] || die "internal: helper.py not found at ${HELPER_PY}"

@@ -232,6 +232,7 @@ runs:
       run: |
         set -euo pipefail
         export ERR_TITLE='Marketplace repo-metadata'
-        # shellcheck source=/dev/null
-        . "${GITHUB_ACTION_PATH}/../_lib/lib.sh"
+        # Delegated to a sibling script (run.sh sources lib.sh itself;
+        # functions do not cross the `bash` process boundary). All env
+        # vars above are inherited by the child shell.
         bash "${GITHUB_ACTION_PATH}/run.sh"

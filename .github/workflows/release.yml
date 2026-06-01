@@ -1210,23 +1210,28 @@ jobs:
 
   repo-metadata:
     name: Sync repo About box
-    # Runs in PARALLEL with `release`. Both depend on `promote`; neither
-    # depends on the other. Rationale: the About-box sync used to live
-    # at the very end of the pipeline (`needs: [..., release]`), which
-    # meant a manifest-load error here (e.g. the composite-default
-    # `Unrecognized named-value: 'github'` bug fixed in d61bf18) only
-    # surfaced AFTER the GitHub Release was already published — too
-    # late to abort or retry cleanly. Splitting it off `release`
-    # surfaces the failure at the same time as the release step,
-    # while still consuming the post-promote SHA the README sync needs.
-    needs: [preflight-runner-config, promote]
-    # Gate on `promote.outputs.promoted == 'true'` rather than
-    # `release.result == 'success'` because we no longer depend on
-    # release. The metadata sync only needs the tree on `main` to be
-    # stable, which `promote` guarantees. `!cancelled()` keeps the
-    # explicit job-level skip (no metadata-sync PAT configured)
-    # distinct from upstream cancellation.
-    if: ${{ !cancelled() && needs.promote.outputs.promoted == 'true' && !inputs.dry_run && !inputs.skip_repo_metadata }}
+    # Runs BEFORE `promote` — gated on `compute-tag`, so it starts as
+    # soon as the release tag is resolved rather than waiting for the
+    # promote/release jobs. It reads the `dev` tree (the exact source
+    # `promote` fast-forwards into `main`), so the AI description and
+    # topic seed come from the same README that is about to ship.
+    #
+    # Tradeoff (accepted deliberately): the live public About box is
+    # refreshed before the release is guaranteed to publish. If a later
+    # job (`promote`/`release`) fails, the metadata reflects a release
+    # that did not ship. This is acceptable because the About-box fields
+    # (description / homepage / topics) track the dev tree's README,
+    # which is already the intended next release's content — a failed
+    # promote is re-runnable and the next attempt re-syncs the same
+    # metadata. The sync never blocks the release: it neither gates
+    # `promote` nor rolls anything back on failure.
+    needs: [preflight-runner-config, compute-tag]
+    # Gate on `compute-tag` succeeding (the tag is resolved and the dev
+    # tree is releasable). `!cancelled()` keeps the explicit job-level
+    # skip (no metadata-sync PAT configured) distinct from upstream
+    # cancellation, while `needs.compute-tag.result == 'success'` ensures
+    # we do not run when tag resolution itself failed.
+    if: ${{ !cancelled() && needs.compute-tag.result == 'success' && !inputs.dry_run && !inputs.skip_repo_metadata }}
     # Resolves `vars.DEFAULT_RUNNER` (bare label or JSON-array string).
     # Both presence and shape are enforced by `preflight-runner-config`,
     # so this expression has no fallback — see the hub's README
@@ -1234,8 +1239,8 @@ jobs:
     runs-on: ${{ fromJSON(startsWith(vars.DEFAULT_RUNNER, '[') && vars.DEFAULT_RUNNER || format('"{0}"', vars.DEFAULT_RUNNER)) }}
     timeout-minutes: 5
     permissions:
-      # `contents: read` for the post-promote checkout (so the composite
-      # reads the README that landed on `main`, not the dev tree).
+      # `contents: read` for the dev checkout (so the composite reads the
+      # README about to be promoted to `main`).
       # `models: read` for the GitHub Models AI rewrite of the description
       # and topic generation. The composite falls back deterministically
       # to the raw README seed if the AI call fails, so absence of
@@ -1262,9 +1267,8 @@ jobs:
       #      already holds Contents:Write.
       #
       # When neither secret is set we skip with a notice rather than
-      # fail the release — the tag + GitHub Release are already
-      # published at this point, so the metadata refresh is a soft
-      # post-step.
+      # fail the release — the metadata refresh is a soft step that runs
+      # before promote and must never block the release on a missing PAT.
       # ----------------------------------------------------------------
       - id: token-check
         name: Resolve metadata sync token
@@ -1279,24 +1283,24 @@ jobs:
               echo ""
               echo "Skipped — neither \`secrets.REPO_ADMIN_PAT\` nor \`secrets.RELEASE_PAT\` is configured."
               echo ""
-              echo "The release published successfully; the public \`About\` box was not refreshed."
+              echo "The public \`About\` box was not refreshed; the release proceeds regardless."
               echo ""
-              echo "To enable post-release metadata sync, provision a PAT that grants Administration writes on this repo and add it as the \`RELEASE_PAT\` repository secret (single-PAT path) — or as the \`REPO_ADMIN_PAT\` secret when you specifically want the metadata sync's blast radius separated from the release push. See README § 'Repo About box sync (repo-metadata)' and § 'Step 5b — Tokens, secrets, and variables'."
+              echo "To enable metadata sync, provision a PAT that grants Administration writes on this repo and add it as the \`RELEASE_PAT\` repository secret (single-PAT path) — or as the \`REPO_ADMIN_PAT\` secret when you specifically want the metadata sync's blast radius separated from the release push. See README § 'Repo About box sync (repo-metadata)' and § 'Step 5b — Tokens, secrets, and variables'."
             } >> "${GITHUB_STEP_SUMMARY}"
-            echo "::notice title=Repo metadata sync skipped::No metadata-sync PAT configured (neither REPO_ADMIN_PAT nor RELEASE_PAT); release succeeded but the public About box was not refreshed."
+            echo "::notice title=Repo metadata sync skipped::No metadata-sync PAT configured (neither REPO_ADMIN_PAT nor RELEASE_PAT); the public About box was not refreshed."
           else
             echo "::notice title=Repo metadata sync token::Using \`secrets.${PAT_SOURCE}\` for repo-metadata PATCH/PUT calls."
           fi
           echo "has_pat=${HAS_PAT}" >> "${GITHUB_OUTPUT}"
 
       - if: steps.token-check.outputs.has_pat == 'true'
-        name: Checkout post-promote main
+        name: Checkout dev (pre-promote source)
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          # Read the post-promote main tree — same source the
-          # Marketplace listing renders from, so the AI description
-          # and topic seed come from the shipped README.
-          ref: ${{ needs.promote.outputs.target_sha }}
+          # Read the `dev` tree — the exact source `promote` fast-forwards
+          # into `main`, so the AI description and topic seed come from
+          # the README that is about to ship.
+          ref: dev
           persist-credentials: false
 
       - if: steps.token-check.outputs.has_pat == 'true'

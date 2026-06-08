@@ -1,5 +1,5 @@
 # Consolidated repo security scan — calls the hub-side reusable
-# `blackoutsecure/bos-automation-hub/.github/workflows/bos-launchpad-code-scan.yml`
+# `blackoutsecure/bos-automation-hub/.github/workflows/security-scan.yml`
 # so a SINGLE hub commit can roll out `github/codeql-action` SHA bumps,
 # `bos-code-scanning-kit@v1` major pins, and runner-label changes to every
 # opted-in repo on next run.
@@ -71,7 +71,7 @@
 #   uses: github/codeql-action/analyze@7211b7c8077ea37d8641b6271f6a365a22a5fbfa # v4.36.0
 #
 # Bump the SHAs above in lockstep with
-# `bos-automation-hub/.github/workflows/bos-launchpad-code-scan.yml`
+# `bos-automation-hub/.github/workflows/security-scan.yml`
 # whenever the hub rolls a new pin set. The literal SHAs here are
 # documentary only — the hub reusable is the source of truth.
 #
@@ -218,7 +218,7 @@ jobs:
   # ---------------------------------------------------------------------------
   scan:
     needs: preflight
-    uses: blackoutsecure/bos-automation-hub/.github/workflows/bos-launchpad-code-scan.yml@main
+    uses: blackoutsecure/bos-automation-hub/.github/workflows/security-scan.yml@main
     permissions:
       contents: read
       security-events: write

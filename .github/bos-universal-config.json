@@ -11,22 +11,45 @@
       "NOTICE"
     ],
     "blocked_paths": [
-      ".github/workflows/"
+      ".github/workflows/",
+      ".editorconfig",
+      ".gitattributes",
+      ".gitignore",
+      ".markdownlint.yaml",
+      "pyproject.toml",
+      "tests/"
     ],
     "required_paths": [
+      ".github/dependabot.yml",
       "action.yml",
       ".github/actions",
       "README.md",
       "LICENSE",
       "NOTICE"
     ],
-    "include_dependabot_config": false,
+    "include_dependabot_config": true,
     "include_github_metadata": false
   },
   "managed_file_sync": {
+    "use_marketplace_config": true,
     "services": [
       "common",
-      "lf_line_endings"
+      "lf_line_endings",
+      "dependabot_actions",
+      "dependabot_pip",
+      "editorconfig",
+      "bos_universal_marketplace_kicker",
+      "bos_universal_action_test_kicker"
+    ]
+  },
+  "action_test": {
+    "python_versions": [
+      "3.10",
+      "3.11",
+      "3.12"
+    ],
+    "python_packages": [
+      ".[dev]"
     ]
   }
 }

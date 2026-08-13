@@ -1,0 +1,32 @@
+{
+  "marketplace": {
+    "enabled": true,
+    "target_branch": "main",
+    "allowlist_paths": [
+      "action.yml",
+      ".github/actions",
+      "src",
+      "README.md",
+      "LICENSE",
+      "NOTICE"
+    ],
+    "blocked_paths": [
+      ".github/workflows/"
+    ],
+    "required_paths": [
+      "action.yml",
+      ".github/actions",
+      "README.md",
+      "LICENSE",
+      "NOTICE"
+    ],
+    "include_dependabot_config": false,
+    "include_github_metadata": false
+  },
+  "managed_file_sync": {
+    "services": [
+      "common",
+      "lf_line_endings"
+    ]
+  }
+}

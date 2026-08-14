@@ -59,6 +59,8 @@ previews, and a local CLI that runs the same checks offline.
   * [📤 Action outputs](#-action-outputs)
   * [🧰 What's in the box](#-whats-in-the-box)
   * [🏗️ Configuration inheritance and layering](#️-configuration-inheritance-and-layering)
+    * [Composing with bos-code-scanning-kit](#composing-with-bos-code-scanning-kit)
+    * [Posture profiles](#posture-profiles)
   * [📦 Package metadata](#-package-metadata)
   * [✅ Check rule catalogue](#-check-rule-catalogue)
   * [🚢 Publishing to Marketplace](#-publishing-to-marketplace)
@@ -208,6 +210,9 @@ meaning *take the value from the [config cascade](#️-configuration-inheritance
 | `pr_template_source` | (config) | CH005 source override (or empty to use global). |
 | `funding_source` | (config) | CH006 source override (or empty to use global). |
 | `auto_generate_missing` | (config) | [FUTURE] When `true`, use an LLM to draft missing community-health files and open a PR. Stub today; reserved for a future release. |
+| `profile` | (config) | `baseline` (default) or `strict` — see the README config schema. |
+| `enable_security_scan` | (config) | Run the security-posture rule families (SC/CQ/GH/MS/SR). Default `true`. |
+| `defer_to_code_scanning_kit` | (config) | `auto`, `true`, or `false`. Skip rules already owned by bos-code-scanning-kit. |
 | `enable_ai_findings_summary` | (config) | Summarise findings with an AI provider when reachable. Always falls back to local remediation. |
 | `ai_findings_summary_provider` | (config) | `auto`, `none`, `github-models`, or `external`. |
 | `ai_model` | (config) | Model identifier for the AI summary (e.g. `openai/gpt-4o-mini`). |
@@ -266,7 +271,9 @@ enabled — and `2` on a configuration error.
 Publishing on the Marketplace has rules that are easy to miss:
 
 * `action.yml` must be at the root of the default branch.
-* The default branch must not contain any `.github/workflows/*` files.
+* The default branch should contain only what the action needs. GitHub does
+  **not** forbid `.github/workflows/*` there — see
+  [Marketplace requirements vs. kit policy](#marketplace-requirements-vs-kit-policy).
 * The `name:` field has four sub-rules (unique, not a user/org, not a
   category, not a reserved feature).
 * `branding.icon` must come from a specific snapshot of Feather Icons.
@@ -410,6 +417,9 @@ callers.
 | `ai_findings_summary_provider` | string | `auto`, `none`, `github-models`, or `external`. |
 | `ai_model` | string | Model identifier. Empty uses the provider default. |
 | `local_heuristic_fallback` | boolean | Default `true`. Emit deterministic remediation when no model is used. |
+| `profile` | string | `baseline` (default) or `strict`. See [Posture profiles](#posture-profiles). |
+| `enable_security_scan` | boolean | Default `true`. `false` skips the whole security-posture rule group. |
+| `defer_to_code_scanning_kit` | `auto` / boolean | Default `auto`. Skip rules owned by `bos-code-scanning-kit`. |
 
 Values are validated before any check runs: a bad enum, a negative
 length, or a path escaping the repo fails the step with exit code `2`
@@ -467,6 +477,97 @@ marketplace defaults.
 Only `require_security` is enforced; every other rule falls back to the
 conservative runtime default of `skip`.
 
+### Composing with `bos-code-scanning-kit`
+
+The two kits are deliberately complementary, but four rules overlap. When a
+workflow in your repo already calls
+[`blackoutsecure/bos-code-scanning-kit`](https://github.com/blackoutsecure/bos-code-scanning-kit),
+this kit **defers** those rules to it rather than double-reporting the same
+control on the Security tab and in two job summaries.
+
+| This kit | Code-scanning kit | Who wins by default |
+|----------|-------------------|---------------------|
+| `GH001` code scanning enabled | `PS001` | code-scanning kit (probes Default **and** Advanced setup) |
+| `GH002` secret scanning enabled | `PS002` | code-scanning kit |
+| `GH003` Dependabot alerts enabled | `PS003` | code-scanning kit |
+| `MS001` Security DevOps workflow | `PS013` | code-scanning kit |
+
+Everything else stays here — `MP###`, `OP###`, `SC###`, `CH###`, `DP001`,
+`CQ001`, `LT###`, `SR001`, `RM###` have no code-scanning-kit equivalent. And
+`PS004` (push protection), `PS010`–`PS012` (workflow permissions, SHA pins),
+`PS020`–`PS025` (branch protection) and `PS030`–`PS033` (CODEOWNERS) have no
+equivalent here, so nothing is lost by deferring.
+
+`defer_to_code_scanning_kit` controls this:
+
+| Value | Behaviour |
+|-------|-----------|
+| `auto` (default) | Defer only when a workflow in the repo references the code-scanning kit. |
+| `true` | Always defer — use it when the kit runs from an org-level workflow this repo cannot see. |
+| `false` | Never defer; run both. Useful while migrating. |
+
+`auto` matches a literal `blackoutsecure/bos-code-scanning-kit` reference in
+`.github/workflows/*.y*ml`. It deliberately does **not** follow reusable
+workflows: if your repo calls a hub reusable that in turn calls the kit, the
+reference is not visible here, so set `defer_to_code_scanning_kit: true`
+explicitly. This repository does exactly that — see
+[`.github/bos-universal-config.json`](.github/bos-universal-config.json).
+
+Deferred rules are reported as `skip` with the reason, and listed under
+**Suppressed** in `marketplace-kit config` — they are never silently dropped:
+
+```console
+$ marketplace-kit config
+## Suppressed (forced to `skip`)
+  require_ghas_code_scanning     owned by blackoutsecure/bos-code-scanning-kit (PS001)
+```
+
+So: if the code-scanning kit already covers a control, you do **not** need to
+name it in this kit's config. Leave it at the built-in default and the
+cascade sorts it out.
+
+### Posture profiles
+
+`profile` selects how strong the built-in recommendation is. It applies
+between the marketplace tier and your global/repo config, so you can adopt a
+profile and still relax one rule.
+
+| Profile | Meaning |
+|---------|---------|
+| `baseline` (default) | The kit's conservative recommendation. Adding the kit to an existing repo never breaks CI on day one. |
+| `strict` | The **recommended target state**. Promotes the controls that are free on public repos — `SECURITY.md`, CodeQL, Dependabot config + alerts, GHAS toggles, `.editorconfig`/`.gitattributes`/`.gitignore`, repo description and topics — from `warn` to `fail`, and turns markdownlint/yamllint/Scorecard on at `warn`. |
+
+```json
+{
+  "marketplace_kit": {
+    "profile": "strict",
+    "require_codeql": "warn"
+  }
+}
+```
+
+Adopt `strict` once a repo is clean under `baseline`; the per-rule override
+above is the escape hatch for the one control you are not ready for.
+
+### Turning the security scan off
+
+`enable_security_scan` is a single switch over the whole security-posture
+group (`require_security`, `require_codeql`, the three `GH###` rules,
+`MS001`, `SR001`). It is **`true` by default**:
+
+```json
+{
+  "marketplace_kit": {
+    "enable_security_scan": false
+  }
+}
+```
+
+Every rule in the group is forced to `skip` and listed under **Suppressed**
+with the reason. Use it when a dedicated scanner owns security posture for
+the repo and you want this kit to cover Marketplace readiness only. It does
+not touch `MP###`, `OP###`, `CH###`, `LT###`, or `RM###`.
+
 ### Config inputs on the action
 
 | Input | Default | Meaning |
@@ -513,6 +614,59 @@ without a package install. The bundled fallback is kept in lockstep with
 **Package metadata is not policy.** `action.yml`, `pyproject.toml`, and the
 installed distribution own identity; the global and repository configs own
 policy. Ignoring or overriding policy does not remove package identity.
+
+### Marketplace requirements vs. kit policy
+
+Three claims are commonly conflated. Per
+[GitHub's publishing docs](https://docs.github.com/en/actions/how-tos/create-and-publish-actions/publish-in-github-marketplace):
+
+| Claim | Verdict | Detail |
+|-------|---------|--------|
+| `action.yml` must be at the repo root of the default branch | **GitHub requirement** | Enforced by `MP007`. |
+| A repo may contain only one action | **Partly** — one *listed* action. Sub-folder manifests are explicitly allowed, they just are not listed. | This is why the kit's nine composites live under `.github/actions/**`. |
+| The default branch must not contain `.github/workflows/**` | **Not a GitHub rule.** | The docs only ask that the repo contain "the metadata file, code, and files necessary for the action". Keeping workflows off `main` is *this kit's policy*, implemented by `promote` + `guard`. |
+| A composite action may `uses:` another action | **Allowed** since composite `uses:` support shipped in 2021. | Nested `uses:` must still be SHA-pinned (`SC002`). |
+
+The practical consequence: the `dev` → `main` promote model is a **hardening
+choice**, not a publishing prerequisite. It keeps the published surface
+minimal and auditable — a consumer pinning `@v1` gets `action.yml`, `src/`,
+`.github/actions/**`, `README`, `LICENSE`, and `NOTICE`, and nothing else. If
+you prefer a single-branch repo, publishing still works; you simply lose that
+guarantee. Nothing in `check` fails a repo for keeping workflows on its
+default branch.
+
+### Why a root action that delegates
+
+The root [`action.yml`](action.yml) is a thin pass-through to
+`.github/actions/check`. That is deliberate, and it is the only shape that
+satisfies both constraints at once:
+
+* Marketplace lists exactly one manifest, and it must be at the root.
+* The check logic is ~500 lines of manifest plus a 900-line `run.sh`, shared
+  with callers who address the nested composite directly.
+
+Duplicating the manifest at the root would create two sources of truth for 50
+inputs. Delegation keeps one. The cost is one extra step in the job log.
+
+### Action roster review
+
+| Composite | Keep? | Rationale |
+|-----------|-------|-----------|
+| `check` | ✅ | The listed surface. Everything else is opt-in. |
+| `guard` | ✅ | Distinct trigger (`pull_request`) and permissions from `check`; no overlap. |
+| `promote` | ✅ | Release-time, `contents: write`. Cannot merge into `check`. |
+| `name-check` | ✅ | Network calls to github.com; deliberately not in the PR path. |
+| `branding-preview` | ✅ | Writes a PR comment; different permission set. |
+| `dist-check` | ✅ | Only meaningful for bundled JS actions. Correctly opt-in. |
+| `lint` | ✅ | Orchestrates markdownlint/yamllint/shellcheck/actionlint. Overlaps `bos-code-scanning-kit`'s actionlint + shellcheck stage — prefer that kit when both are installed. |
+| `branch-protection` | ⚠️ | Overlaps `PS020`–`PS025`. This one *applies* settings; the code-scanning kit only *audits* them. Keep both; do not run them against each other's expectations. |
+| `repo-metadata` | ✅ | Writes the About box; the `RM###` rules audit it. Read/write pair, not a duplicate. |
+
+No composite references an external action: `check` downloads `actionlint`
+over HTTPS and verifies it against a per-architecture SHA-256 pinned in
+`action.yml`. There is no `uses:` of a third-party action anywhere in
+`.github/actions/**`, so `SC002` and the code-scanning kit's `PS012` are
+satisfied by construction rather than by policy.
 
 ## ✅ Check rule catalogue
 
@@ -578,10 +732,13 @@ Allowed: `white`, `yellow`, `blue`, `green`, `orange`, `red`,
 
 ### MP007 — `action.yml` lives at the repo root
 
-Marketplace ONLY detects a single manifest at the root of the default
+Marketplace only lists a single manifest at the root of the default
 branch. Subdirectory manifests (e.g. `.github/actions/foo/action.yml`)
-are NOT listable on Marketplace. The `promote` action's allowlist
-should include `action.yml`.
+are permitted in the repository but are **not** listable — GitHub's docs
+state "repositories may include other actions metadata files in
+sub-folders, but they will not be automatically listed in the
+marketplace". The `promote` action's allowlist should include
+`action.yml`.
 
 ### MP008 — Name is not too short
 
@@ -1970,9 +2127,11 @@ Exit codes: `0` clean, `1` a rule failed (or warned with
   inspect.
 * **`action.yml` must be at the repo root of the default branch.** That is a
   Marketplace requirement, not a kit one — `MP007` catches it early.
-* **The default branch must not contain `.github/workflows/**`.** This is why
-  the kit ships the `dev` → `main` publish model; see
-  [🚢 Publishing to Marketplace](#-publishing-to-marketplace).
+  Additional manifests under `.github/actions/**` are explicitly permitted;
+  they simply are not listed.
+* **Keeping `.github/workflows/**` off `main` is kit policy, not a GitHub
+  rule.** See
+  [Marketplace requirements vs. kit policy](#marketplace-requirements-vs-kit-policy).
 * **Skips are not passes.** A rule set to `skip`, or one whose token lacked
   permission, reports as skipped rather than as evidence that the control is
   in place. `GH003` in particular needs an admin-scoped token.

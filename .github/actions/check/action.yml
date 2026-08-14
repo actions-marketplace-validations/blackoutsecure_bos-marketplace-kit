@@ -269,6 +269,33 @@ inputs:
     required: false
     default: ''
 
+  # ----- Posture profile / scope ------------------------------------------
+  profile:
+    description: >-
+      `baseline` (default) uses the kit's recommended severities.
+      `strict` promotes the controls that are free on public repos
+      (`SECURITY.md`, CodeQL, Dependabot, GHAS toggles, repo About box)
+      from `warn` to `fail`. A global or repo config can still relax an
+      individual rule on top of the profile. Empty uses the config value.
+    required: false
+    default: ''
+  enable_security_scan:
+    description: >-
+      `true` (default) runs the security-posture rules (`SC###`,
+      `CQ001`, `GH###`, `MS001`, `SR001`). `false` forces that whole
+      group to `skip` in one switch — use it when a dedicated scanner
+      owns security posture for the repo. Empty uses the config value.
+    required: false
+    default: ''
+  defer_to_code_scanning_kit:
+    description: >-
+      `auto` (default) skips the rules that duplicate
+      `blackoutsecure/bos-code-scanning-kit` (GH001/GH002/GH003 -> its
+      PS001/PS002/PS003, MS001 -> PS013) when a workflow in this repo
+      already calls that kit. `true` always defers; `false` never does.
+    required: false
+    default: ''
+
   # ----- AI-assisted findings summary ------------------------------------
   # Opportunistic: only used when a provider is reachable. Findings
   # selected for the summary are the only data sent to a model.
@@ -572,6 +599,9 @@ runs:
         MK_IN_AI_FINDINGS_SUMMARY_PROVIDER: ${{ inputs.ai_findings_summary_provider }}
         MK_IN_AI_MODEL:                    ${{ inputs.ai_model }}
         MK_IN_LOCAL_HEURISTIC_FALLBACK:    ${{ inputs.local_heuristic_fallback }}
+        MK_IN_PROFILE:                     ${{ inputs.profile }}
+        MK_IN_ENABLE_SECURITY_SCAN:        ${{ inputs.enable_security_scan }}
+        MK_IN_DEFER_TO_CODE_SCANNING_KIT:  ${{ inputs.defer_to_code_scanning_kit }}
       run: |
         set -euo pipefail
         # `.github/actions/check` -> repo root -> bundled source tree.

@@ -801,6 +801,7 @@ def cmd_config(args: argparse.Namespace) -> int:
             "package": dict(meta.as_rows()),
             "tiers": resolved.tiers,
             "use_marketplace_config": resolved.use_marketplace,
+            "suppressed": resolved.suppressed,
             "marketplace_kit": {
                 o.key: config.render(o.key, resolved.values[o.key])
                 for o in config.OPTIONS
@@ -822,6 +823,11 @@ def cmd_config(args: argparse.Namespace) -> int:
     for tier in resolved.tiers:
         print(f"  {tier}")
     print()
+    if resolved.suppressed:
+        print("## Suppressed (forced to `skip`)")
+        for key, reason in sorted(resolved.suppressed.items()):
+            print(f"  {key:<30} {reason}")
+        print()
     print("## Values")
     for option in config.OPTIONS:
         print(f"  {option.key:<30} {config.render(option.key, resolved.values[option.key])}")

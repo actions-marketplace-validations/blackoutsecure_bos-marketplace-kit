@@ -165,6 +165,20 @@ inputs:
     required: false
     default: ''
 
+  # ----- Posture profile / scope ------------------------------------------
+  profile:
+    description: '`baseline` (default) or `strict` — see the README config schema.'
+    required: false
+    default: ''
+  enable_security_scan:
+    description: 'Run the security-posture rule families (SC/CQ/GH/MS/SR). Default `true`.'
+    required: false
+    default: ''
+  defer_to_code_scanning_kit:
+    description: '`auto`, `true`, or `false`. Skip rules already owned by bos-code-scanning-kit.'
+    required: false
+    default: ''
+
   # ----- AI-assisted findings summary ------------------------------------
   enable_ai_findings_summary:
     description: 'Summarise findings with an AI provider when reachable. Always falls back to local remediation.'
@@ -332,3 +346,6 @@ runs:
         ai_findings_summary_provider: ${{ inputs.ai_findings_summary_provider }}
         ai_model:                     ${{ inputs.ai_model }}
         local_heuristic_fallback:     ${{ inputs.local_heuristic_fallback }}
+        profile:                      ${{ inputs.profile }}
+        enable_security_scan:         ${{ inputs.enable_security_scan }}
+        defer_to_code_scanning_kit:   ${{ inputs.defer_to_code_scanning_kit }}

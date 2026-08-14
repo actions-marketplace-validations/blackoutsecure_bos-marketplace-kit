@@ -31,7 +31,8 @@
     "include_github_metadata": false
   },
   "marketplace_kit": {
-    "use_marketplace_config": true
+    "use_marketplace_config": true,
+    "defer_to_code_scanning_kit": true
   },
   "managed_file_sync": {
     "use_marketplace_config": true,

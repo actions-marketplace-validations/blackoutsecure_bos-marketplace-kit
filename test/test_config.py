@@ -328,3 +328,147 @@ def test_config_driven_inputs_use_the_sentinel_default() -> None:
                 f"{relpath}: input {option.key!r} must default to "
                 f"{sentinel!r} so the config cascade applies"
             )
+
+
+# ---------------------------------------------------------------------------
+# Profiles — the opt-in stronger recommendation
+# ---------------------------------------------------------------------------
+
+def test_baseline_is_the_default_profile(tmp_path: Path) -> None:
+    values = config.resolve(tmp_path).values
+    assert values["profile"] == "baseline"
+    assert values["require_security"] == "warn"
+
+
+def test_strict_profile_promotes_free_controls(tmp_path: Path) -> None:
+    _write(tmp_path, ".github/bos-universal-config.json",
+           {"marketplace_kit": {"profile": "strict"}})
+    values = config.resolve(tmp_path).values
+    assert values["require_security"] == "fail"
+    assert values["require_codeql"] == "fail"
+    assert values["require_ghas_secret_scanning"] == "fail"
+    assert values["require_repo_topics"] == "fail"
+
+
+def test_repo_config_can_relax_a_rule_on_top_of_strict(tmp_path: Path) -> None:
+    _write(tmp_path, ".github/bos-universal-config.json",
+           {"marketplace_kit": {"profile": "strict",
+                                "require_codeql": "warn"}})
+    values = config.resolve(tmp_path).values
+    assert values["require_codeql"] == "warn"
+    assert values["require_security"] == "fail"
+
+
+def test_strict_profile_can_come_from_a_workflow_input(tmp_path: Path) -> None:
+    values = config.resolve(tmp_path, overrides={"profile": "strict"}).values
+    assert values["require_security"] == "fail"
+
+
+def test_unknown_profile_is_rejected(tmp_path: Path) -> None:
+    _write(tmp_path, ".github/bos-universal-config.json",
+           {"marketplace_kit": {"profile": "paranoid"}})
+    with pytest.raises(config.ConfigError):
+        config.resolve(tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# enable_security_scan
+# ---------------------------------------------------------------------------
+
+def test_security_scan_is_on_by_default(tmp_path: Path) -> None:
+    resolved = config.resolve(tmp_path)
+    assert resolved.values["enable_security_scan"] is True
+    assert resolved.values["require_security"] == "warn"
+    assert resolved.suppressed == {}
+
+
+def test_disabling_the_security_scan_skips_the_whole_group(tmp_path: Path) -> None:
+    _write(tmp_path, ".github/bos-universal-config.json",
+           {"marketplace_kit": {"enable_security_scan": False}})
+    resolved = config.resolve(tmp_path)
+    for key in config.SECURITY_SCAN_RULES:
+        assert resolved.values[key] == "skip", key
+    assert "require_security" in resolved.suppressed
+
+
+def test_disabling_the_security_scan_leaves_other_rules_alone(tmp_path: Path) -> None:
+    _write(tmp_path, ".github/bos-universal-config.json",
+           {"marketplace_kit": {"enable_security_scan": False}})
+    values = config.resolve(tmp_path).values
+    assert values["require_code_of_conduct"] == "warn"
+    assert values["require_repo_description"] == "warn"
+
+
+def test_security_scan_can_be_disabled_from_a_workflow_input(tmp_path: Path) -> None:
+    values = config.resolve(
+        tmp_path, overrides={"enable_security_scan": "false"}).values
+    assert values["require_codeql"] == "skip"
+
+
+# ---------------------------------------------------------------------------
+# Deferral to bos-code-scanning-kit
+# ---------------------------------------------------------------------------
+
+def _workflow_calling_code_scanning_kit(root: Path) -> None:
+    path = root / ".github" / "workflows" / "scan.yml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "jobs:\n  scan:\n    steps:\n"
+        f"      - uses: {config.CODE_SCANNING_KIT}@v1\n",
+        encoding="utf-8")
+
+
+def test_auto_defers_when_the_code_scanning_kit_is_wired_up(tmp_path: Path) -> None:
+    _workflow_calling_code_scanning_kit(tmp_path)
+    resolved = config.resolve(tmp_path)
+    for key in config.CODE_SCANNING_KIT_RULES:
+        assert resolved.values[key] == "skip", key
+    # Only rules that were actually enabled get a suppression reason.
+    assert config.CODE_SCANNING_KIT_RULES["require_ghas_code_scanning"] in \
+        resolved.suppressed["require_ghas_code_scanning"]
+    assert "require_security_devops" not in resolved.suppressed
+
+
+def test_auto_does_not_defer_without_the_code_scanning_kit(tmp_path: Path) -> None:
+    resolved = config.resolve(tmp_path)
+    assert resolved.values["require_ghas_code_scanning"] == "warn"
+    assert resolved.suppressed == {}
+
+
+def test_deferral_can_be_forced_on(tmp_path: Path) -> None:
+    _write(tmp_path, ".github/bos-universal-config.json",
+           {"marketplace_kit": {"defer_to_code_scanning_kit": True}})
+    values = config.resolve(tmp_path).values
+    assert values["require_ghas_secret_scanning"] == "skip"
+
+
+def test_deferral_can_be_forced_off(tmp_path: Path) -> None:
+    _workflow_calling_code_scanning_kit(tmp_path)
+    _write(tmp_path, ".github/bos-universal-config.json",
+           {"marketplace_kit": {"defer_to_code_scanning_kit": "false"}})
+    resolved = config.resolve(tmp_path)
+    assert resolved.values["require_ghas_code_scanning"] == "warn"
+    assert resolved.suppressed == {}
+
+
+def test_deferral_leaves_marketplace_only_rules_alone(tmp_path: Path) -> None:
+    """The kits are complementary: MP/OP/CH/LT/RM stay with this kit."""
+    _workflow_calling_code_scanning_kit(tmp_path)
+    values = config.resolve(tmp_path).values
+    assert values["require_security"] == "warn"
+    assert values["require_code_of_conduct"] == "warn"
+    assert values["require_repo_description"] == "warn"
+
+
+def test_deferral_does_not_claim_scorecard(tmp_path: Path) -> None:
+    """SR001 has no code-scanning-kit equivalent, so it is never deferred."""
+    assert "require_scorecard" not in config.CODE_SCANNING_KIT_RULES
+
+
+def test_uses_code_scanning_kit_detects_only_real_calls(tmp_path: Path) -> None:
+    workflows = tmp_path / ".github" / "workflows"
+    workflows.mkdir(parents=True)
+    (workflows / "ci.yml").write_text("jobs: {}\n", encoding="utf-8")
+    assert config.uses_code_scanning_kit(tmp_path) is False
+    _workflow_calling_code_scanning_kit(tmp_path)
+    assert config.uses_code_scanning_kit(tmp_path) is True

@@ -50,6 +50,10 @@
     "enable_ai_findings_summary": true,
     "ai_findings_summary_provider": "auto",
     "ai_model": "",
-    "local_heuristic_fallback": true
+    "local_heuristic_fallback": true,
+
+    "profile": "baseline",
+    "enable_security_scan": true,
+    "defer_to_code_scanning_kit": "auto"
   }
 }

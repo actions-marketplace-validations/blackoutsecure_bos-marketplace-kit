@@ -48,6 +48,55 @@ MARKETPLACE_CONFIG_FILE = "marketplace-kit-marketplace-config.json"
 POLICY_VALUES = ("fail", "warn", "skip")
 SOURCE_VALUES = ("local", "inherit", "either")
 PROVIDER_VALUES = ("auto", "none", "github-models", "external")
+PROFILE_VALUES = ("baseline", "strict")
+
+# Marketplace slug of the companion kit that owns live security posture.
+CODE_SCANNING_KIT = "blackoutsecure/bos-code-scanning-kit"
+
+# Rules this kit would otherwise duplicate from the code-scanning kit's
+# posture audit. Left of the arrow is ours, right is theirs.
+CODE_SCANNING_KIT_RULES: dict[str, str] = {
+    "require_ghas_code_scanning": "PS001",
+    "require_ghas_secret_scanning": "PS002",
+    "require_dependabot_alerts": "PS003",
+    "require_security_devops": "PS013",
+}
+
+# Every rule that only exists to assert security posture. Switched off
+# as a group by `enable_security_scan: false`.
+SECURITY_SCAN_RULES: tuple[str, ...] = (
+    "require_security",
+    "require_codeql",
+    "require_ghas_code_scanning",
+    "require_ghas_secret_scanning",
+    "require_dependabot_alerts",
+    "require_security_devops",
+    "require_scorecard",
+)
+
+# The `strict` profile's recommendation: promote the controls that are
+# free on public repositories and cheap to satisfy from `warn` to `fail`.
+# Kept as an opt-in overlay so the default posture never breaks a build
+# on upgrade.
+STRICT_PROFILE: dict[str, Any] = {
+    "require_security": "fail",
+    "require_code_of_conduct": "fail",
+    "require_contributing": "fail",
+    "require_dependabot": "fail",
+    "require_codeql": "fail",
+    "require_editorconfig": "fail",
+    "require_gitattributes": "fail",
+    "require_gitignore": "fail",
+    "require_markdownlint": "warn",
+    "require_yamllint": "warn",
+    "require_ghas_code_scanning": "fail",
+    "require_ghas_secret_scanning": "fail",
+    "require_dependabot_alerts": "fail",
+    "require_scorecard": "warn",
+    "require_repo_description": "fail",
+    "require_repo_topics": "fail",
+    "require_repo_homepage": "warn",
+}
 
 
 class ConfigError(Exception):
@@ -124,6 +173,10 @@ OPTIONS: tuple[Option, ...] = (
     Option("ai_findings_summary_provider", "AI_PROVIDER", "provider", "auto"),
     Option("ai_model", "AI_MODEL", "text", ""),
     Option("local_heuristic_fallback", "AI_LOCAL_FALLBACK", "bool", True),
+
+    Option("profile", "MK_PROFILE", "profile", "baseline"),
+    Option("enable_security_scan", "ENABLE_SECURITY_SCAN", "bool", True),
+    Option("defer_to_code_scanning_kit", "DEFER_TO_CODE_SCANNING_KIT", "tristate", "auto"),
 )
 
 OPTIONS_BY_KEY: dict[str, Option] = {o.key: o for o in OPTIONS}
@@ -145,6 +198,7 @@ class Resolved(NamedTuple):
     values: dict[str, Any]
     tiers: list[str]           # human-readable description of each applied tier
     use_marketplace: bool
+    suppressed: dict[str, str] = {}  # option -> why it was forced to `skip`
 
 
 # ---------------------------------------------------------------------------
@@ -283,6 +337,10 @@ _COERCERS: dict[str, Callable[[str, Any], Any]] = {
     "policy": lambda k, v: _coerce_enum(k, v, POLICY_VALUES, allow_empty=False),
     "source": lambda k, v: _coerce_enum(k, v, SOURCE_VALUES, allow_empty=True),
     "provider": lambda k, v: _coerce_enum(k, v, PROVIDER_VALUES, allow_empty=False),
+    "profile": lambda k, v: _coerce_enum(k, v, PROFILE_VALUES, allow_empty=False),
+    "tristate": lambda k, v: _coerce_enum(
+        k, "true" if v is True else "false" if v is False else v,
+        ("auto", "true", "false"), allow_empty=False),
 }
 
 
@@ -400,6 +458,16 @@ def resolve(
     else:
         tiers.append("marketplace config (disabled)")
 
+    # The profile overlay sits between the marketplace tier and the
+    # user tiers so a global or repo config can still relax a single
+    # rule without abandoning the whole profile.
+    profile = _resolve_scalar("profile", sections, overrides,
+                              default=values["profile"])
+    if profile == "strict":
+        merge_tier(values, dict(STRICT_PROFILE), origin="strict profile")
+        tiers.append("strict profile")
+    values["profile"] = profile
+
     for origin, section in sections:
         merge_tier(values, section, origin=origin)
         tiers.append(origin)
@@ -416,7 +484,73 @@ def resolve(
             values.update(applied)
             tiers.append(f"workflow inputs ({', '.join(sorted(applied))})")
 
-    return Resolved(values=values, tiers=tiers, use_marketplace=use_marketplace)
+    suppressed = _apply_suppressions(values, root)
+    return Resolved(values=values, tiers=tiers, use_marketplace=use_marketplace,
+                    suppressed=suppressed)
+
+
+def _resolve_scalar(
+    key: str,
+    sections: Iterable[tuple[str, dict]],
+    overrides: dict[str, Any] | None,
+    *,
+    default: Any,
+) -> Any:
+    """Peek at one option ahead of the main merge. Last tier wins."""
+    value = default
+    for origin, section in sections:
+        if key in section:
+            try:
+                value = coerce(key, section[key])
+            except ConfigError as exc:
+                raise ConfigError(f"{origin}: {exc}") from exc
+    raw = (overrides or {}).get(key)
+    if raw not in (None, ""):
+        value = coerce(key, raw)
+    return value
+
+
+def uses_code_scanning_kit(root: Path) -> bool:
+    """True when any workflow in ``root`` calls the code-scanning kit."""
+    workflows = root / ".github" / "workflows"
+    if not workflows.is_dir():
+        return False
+    for path in sorted(workflows.glob("*.y*ml")):
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        if CODE_SCANNING_KIT in text:
+            return True
+    return False
+
+
+def _apply_suppressions(values: dict[str, Any], root: Path) -> dict[str, str]:
+    """Force rules to `skip` that another tool owns or that were opted out.
+
+    Returns ``{option: reason}`` so the job summary can explain why a
+    rule did not run instead of silently dropping it.
+    """
+    suppressed: dict[str, str] = {}
+
+    if not values["enable_security_scan"]:
+        for key in SECURITY_SCAN_RULES:
+            if values[key] != "skip":
+                suppressed[key] = "enable_security_scan is false"
+
+    defer = values["defer_to_code_scanning_kit"]
+    if defer == "auto":
+        defer = "true" if uses_code_scanning_kit(root) else "false"
+    if defer == "true":
+        for key, their_rule in CODE_SCANNING_KIT_RULES.items():
+            if values[key] != "skip":
+                suppressed[key] = (
+                    f"owned by {CODE_SCANNING_KIT} ({their_rule})"
+                )
+
+    for key in suppressed:
+        values[key] = "skip"
+    return suppressed
 
 
 # ---------------------------------------------------------------------------
@@ -488,6 +622,9 @@ def main(argv: list[str] | None = None) -> int:
     print("Resolved marketplace-kit configuration")
     for tier in resolved.tiers:
         print(f"  tier: {tier}")
+    for key, reason in sorted(resolved.suppressed.items()):
+        print(f"  suppressed: {key} -> skip ({reason})")
+        print(f"::notice::marketplace-kit: {key} skipped — {reason}")
     for option in OPTIONS:
         print(f"  {option.key:<28} {env[option.env]}")
 

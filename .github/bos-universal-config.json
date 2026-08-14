@@ -28,7 +28,13 @@
       "NOTICE"
     ],
     "include_dependabot_config": true,
-    "include_github_metadata": false
+    "include_github_metadata": false,
+    "repo_metadata": {
+      "enable": true,
+      "homepage": "https://github.com/marketplace/actions/blackout-secure-marketplace-kit",
+      "generate_topics": true,
+      "topics_fallback": "github-actions marketplace composite-action ci-cd release-management devsecops publishing"
+    }
   },
   "marketplace_kit": {
     "use_marketplace_config": true,

@@ -9,9 +9,7 @@ under the alias ``repo_metadata_helper``.
 from __future__ import annotations
 
 import pytest
-
 import repo_metadata_helper as rm  # type: ignore[import-not-found]
-
 
 # ---------------------------------------------------------------------------
 # extract_readme_summary

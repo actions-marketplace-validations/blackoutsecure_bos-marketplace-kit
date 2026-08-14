@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import io
-import os
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
@@ -203,7 +202,7 @@ def test_code_scan_workflow_template_shape(tmp_path: Path) -> None:
     # must invoke it by canonical path.
     assert (
         "blackoutsecure/bos-automation-hub/.github/workflows/"
-        "bos-launchpad-code-scan.yml" in out
+        "security-scan.yml" in out
     ), "rendered template does not reference the hub reusable"
 
     # Placeholder substitution still applied to the header comment.

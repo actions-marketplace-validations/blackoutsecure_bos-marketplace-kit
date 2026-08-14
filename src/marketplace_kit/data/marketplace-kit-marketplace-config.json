@@ -1,0 +1,55 @@
+{
+  "marketplace_kit": {
+    "action_yml_path": "action.yml",
+    "fail_on_warning": false,
+    "skip_checks": [],
+    "workflow_dir": ".github/workflows",
+
+    "check_org_health": true,
+    "org_health_repo": "",
+    "community_health_source": "either",
+
+    "require_security": "warn",
+    "require_code_of_conduct": "warn",
+    "require_contributing": "warn",
+    "require_support": "skip",
+    "require_issue_templates": "skip",
+    "require_pr_template": "skip",
+    "require_funding": "skip",
+
+    "security_source": "",
+    "code_of_conduct_source": "",
+    "contributing_source": "",
+    "support_source": "",
+    "issue_templates_source": "",
+    "pr_template_source": "",
+    "funding_source": "",
+
+    "require_dependabot": "warn",
+    "require_codeql": "warn",
+    "require_editorconfig": "warn",
+    "require_gitattributes": "warn",
+    "require_gitignore": "warn",
+    "require_markdownlint": "skip",
+    "require_yamllint": "skip",
+
+    "require_ghas_code_scanning": "warn",
+    "require_ghas_secret_scanning": "warn",
+    "require_dependabot_alerts": "warn",
+    "require_security_devops": "skip",
+    "require_scorecard": "skip",
+
+    "require_repo_description": "warn",
+    "require_repo_homepage": "skip",
+    "require_repo_topics": "warn",
+    "repo_description_max_length": 350,
+    "repo_description_min_length": 30,
+
+    "auto_generate_missing": false,
+
+    "enable_ai_findings_summary": true,
+    "ai_findings_summary_provider": "auto",
+    "ai_model": "",
+    "local_heuristic_fallback": true
+  }
+}

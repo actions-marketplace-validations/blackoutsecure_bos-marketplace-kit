@@ -15,7 +15,6 @@ from __future__ import annotations
 import builtins
 import importlib
 import importlib.util
-import io
 import subprocess
 import sys
 import textwrap

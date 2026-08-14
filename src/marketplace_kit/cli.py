@@ -8,17 +8,18 @@ sanity-check a Marketplace Action locally before pushing.
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import subprocess
 import sys
 import urllib.error
 import urllib.request
+from collections.abc import Iterable
 from importlib import resources
 from pathlib import Path
-from typing import Any, Iterable, NamedTuple
+from typing import Any, NamedTuple
 
-from . import __version__
-
+from . import __version__, ai, config, metadata
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -77,16 +78,16 @@ def _load_manifest(path: Path) -> dict:
         sys.stderr.write(
             "error: PyYAML is required. Install with: pip install bos-marketplace-kit\n"
         )
-        raise SystemExit(2)
+        raise SystemExit(2) from None
 
     try:
         doc = yaml.safe_load(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         sys.stderr.write(f"error: manifest not found: {path}\n")
-        raise SystemExit(2)
+        raise SystemExit(2) from None
     except yaml.YAMLError as exc:
         sys.stderr.write(f"error: invalid YAML in {path}: {exc}\n")
-        raise SystemExit(2)
+        raise SystemExit(2) from exc
 
     if not isinstance(doc, dict):
         sys.stderr.write(f"error: {path} did not parse as a YAML mapping\n")
@@ -206,9 +207,21 @@ def _print_results(results: Iterable[CheckResult]) -> tuple[int, int, int]:
     return ok, fail, warn
 
 
+def _config_values(root: str = ".") -> dict[str, Any]:
+    """Resolved config values, or exit 2 with the validation error."""
+    try:
+        return config.resolve(root).values
+    except config.ConfigError as exc:
+        sys.stderr.write(f"error: {exc}\n")
+        raise SystemExit(2) from exc
+
+
 def cmd_check(args: argparse.Namespace) -> int:
-    manifest = _load_manifest(Path(args.action_yml))
+    values = _config_values()
+    manifest = _load_manifest(Path(args.action_yml or values["action_yml_path"]))
+
     skip_ids = {s.strip() for s in (args.skip or "").split(",") if s.strip()}
+    skip_ids |= set(values["skip_checks"])
     results = [r for r in _run_checks(manifest) if r.rule_id not in skip_ids]
 
     ok, fail, warn = _print_results(results)
@@ -217,7 +230,7 @@ def cmd_check(args: argparse.Namespace) -> int:
 
     if fail:
         return 1
-    if warn and args.fail_on_warning:
+    if warn and (args.fail_on_warning or values["fail_on_warning"]):
         return 1
     return 0
 
@@ -302,7 +315,8 @@ def cmd_name_check(args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------
 
 def cmd_version(_args: argparse.Namespace) -> int:
-    print(f"bos-marketplace-kit {__version__}")
+    meta = metadata.load()
+    print(f"{meta.name} {meta.version}")
     return 0
 
 
@@ -338,7 +352,8 @@ def _branch_exists(branch: str) -> bool:
 
 def cmd_doctor(args: argparse.Namespace) -> int:
     """Repo-readiness summary: manifest + community-health + branches."""
-    manifest_path = Path(args.action_yml)
+    values = _config_values()
+    manifest_path = Path(args.action_yml or values["action_yml_path"])
     fails = warns = 0
 
     print(f"# marketplace-kit doctor (manifest: {manifest_path})")
@@ -385,7 +400,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     print(f"Summary: {fails} fail / {warns} warn")
     if fails:
         return 1
-    if warns and getattr(args, "fail_on_warning", False):
+    if warns and (getattr(args, "fail_on_warning", False) or values["fail_on_warning"]):
         return 1
     return 0
 
@@ -460,6 +475,8 @@ POLICY_KINDS: dict[str, _PolicyKind] = {
     "markdownlint":             _PolicyKind("markdownlint.yaml",            ".markdownlint.yaml",                    "markdownlint config"),
     "yamllint":                 _PolicyKind("yamllint.yml",                 ".yamllint.yml",                         "yamllint config"),
     "shellcheckrc":             _PolicyKind("shellcheckrc",                 ".shellcheckrc",                         "shellcheck config"),
+    "global-config":            _PolicyKind("global-config.json",           config.GLOBAL_CONFIG_PATH,               "Org-level kit config"),
+    "repo-config":              _PolicyKind("repo-config.json",             config.REPO_CONFIG_CANDIDATES[0],        "Repo-level kit config"),
 }
 
 
@@ -515,7 +532,7 @@ def _load_template(template_file: str) -> str:
                 .read_text(encoding="utf-8"))
     except (FileNotFoundError, ModuleNotFoundError) as exc:
         sys.stderr.write(f"error: missing policy template {template_file!r}: {exc}\n")
-        raise SystemExit(2)
+        raise SystemExit(2) from exc
 
 
 def _render_template(text: str, **subs: str) -> str:
@@ -531,6 +548,7 @@ def _render_policy(
     repo: str | None,
     project_name: str | None,
     email: str | None,
+    use_ai: bool = False,
 ) -> tuple[_PolicyKind, str]:
     """Resolve placeholder values and render ``kind``'s template.
 
@@ -538,6 +556,10 @@ def _render_policy(
     --output / --stdout) and ``install`` (canonical-path scaffolder,
     optional --all). Keeping the placeholder defaults in one place
     means both commands substitute identically.
+
+    With ``use_ai`` the rendered draft is offered to an AI provider for
+    tailoring; the static draft is returned unchanged whenever no
+    provider is reachable.
     """
     spec = POLICY_KINDS[kind]
     repo_name = repo or Path.cwd().name
@@ -548,6 +570,19 @@ def _render_policy(
         contact_email=email or "security@example.com",
         project_name=project_name or repo_name,
     )
+    if use_ai:
+        result = ai.tailor_template(
+            rendered,
+            label=spec.label,
+            project_name=project_name or repo_name,
+            enabled=True,
+        )
+        if result.fallback_reason:
+            sys.stderr.write(
+                f"note: --ai fell back to the static template "
+                f"({result.fallback_reason}).\n"
+            )
+        rendered = result.text
     return spec, rendered
 
 
@@ -571,12 +606,8 @@ def cmd_generate_policy(args: argparse.Namespace) -> int:
         repo=args.repo,
         project_name=args.project_name,
         email=args.email,
+        use_ai=args.ai,
     )
-
-    if args.ai:
-        sys.stderr.write(
-            "note: --ai is not yet implemented. Falling back to the static template.\n"
-        )
 
     if args.stdout:
         sys.stdout.write(rendered)
@@ -645,6 +676,7 @@ def _install_one(
     force: bool,
     dry_run: bool,
     base: Path,
+    use_ai: bool = False,
 ) -> tuple[str, _PolicyKind, Path]:
     """Install ``kind`` at its canonical path under ``base``.
 
@@ -658,6 +690,7 @@ def _install_one(
         repo=repo,
         project_name=project_name,
         email=email,
+        use_ai=use_ai,
     )
     out_path = base / spec.default_out
     existed = out_path.exists()
@@ -717,6 +750,7 @@ def cmd_install(args: argparse.Namespace) -> int:
             force=args.force,
             dry_run=args.dry_run,
             base=base,
+            use_ai=args.ai,
         )
         rel = out_path.relative_to(base) if out_path.is_relative_to(base) else out_path
         sys.stderr.write(f"  [{status:<9}] {spec.label:<35} -> {rel}\n")
@@ -744,8 +778,84 @@ def cmd_install(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Entry point
+# Subcommand: config
 # ---------------------------------------------------------------------------
+
+def cmd_config(args: argparse.Namespace) -> int:
+    """Resolve and print the layered kit configuration."""
+    meta = metadata.load()
+    try:
+        resolved = config.resolve(
+            args.root,
+            global_config_path=args.global_config_path,
+            use_global_config=args.use_global_config,
+            repo_config_path=args.config_path,
+            use_marketplace_config=args.use_marketplace_config,
+        )
+    except config.ConfigError as exc:
+        sys.stderr.write(f"error: {exc}\n")
+        return 2
+
+    if args.json:
+        payload = {
+            "package": dict(meta.as_rows()),
+            "tiers": resolved.tiers,
+            "use_marketplace_config": resolved.use_marketplace,
+            "marketplace_kit": {
+                o.key: config.render(o.key, resolved.values[o.key])
+                for o in config.OPTIONS
+            },
+        }
+        print(json.dumps(payload, indent=2))
+        return 0
+
+    # Package identity is printed first and resolved independently of
+    # the policy cascade below.
+    print("# package metadata")
+    print()
+    for label, value in meta.as_rows():
+        print(f"  {label:<16} {value}")
+    print()
+    print("# resolved marketplace-kit configuration")
+    print()
+    print("## Tiers (applied in order)")
+    for tier in resolved.tiers:
+        print(f"  {tier}")
+    print()
+    print("## Values")
+    for option in config.OPTIONS:
+        print(f"  {option.key:<30} {config.render(option.key, resolved.values[option.key])}")
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Subcommand: explain
+# ---------------------------------------------------------------------------
+
+def cmd_explain(args: argparse.Namespace) -> int:
+    """Summarise manifest findings, with AI when a provider is reachable."""
+    values = _config_values()
+    manifest_path = Path(args.action_yml or values["action_yml_path"])
+    findings = [
+        ai.Finding(r.rule_id, r.status, r.message)
+        for r in _run_checks(_load_manifest(manifest_path))
+        if r.rule_id not in set(values["skip_checks"])
+    ]
+
+    enabled = values["enable_ai_findings_summary"] if args.ai is None else args.ai
+    summary = ai.summarize(
+        findings,
+        enabled=bool(enabled),
+        requested_provider=args.provider or str(values["ai_findings_summary_provider"]),
+        model=args.model or str(values["ai_model"]),
+        local_fallback=bool(values["local_heuristic_fallback"]),
+    )
+    print(summary.text)
+    detail = f" ({summary.fallback_reason})" if summary.fallback_reason else ""
+    sys.stderr.write(f"source: {summary.provider}{detail}\n")
+    return 0
+
+
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -758,12 +868,12 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_check = sub.add_parser("check",
         help="Validate action.yml against MP/OP/SC rules.")
-    p_check.add_argument("--action-yml", default="action.yml",
-        help="Path to manifest. Default `action.yml`.")
+    p_check.add_argument("--action-yml", default=None,
+        help="Path to manifest. Defaults to the resolved config value (`action.yml`).")
     p_check.add_argument("--fail-on-warning", action="store_true",
         help="Treat OP### warnings as failures.")
     p_check.add_argument("--skip", default="",
-        help="Comma-separated rule IDs to skip.")
+        help="Comma-separated rule IDs to skip (added to the config's `skip_checks`).")
     p_check.set_defaults(func=cmd_check)
 
     p_nc = sub.add_parser("name-check",
@@ -795,7 +905,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p_gp.add_argument("--force", "-f", action="store_true",
         help="Overwrite the output file if it already exists.")
     p_gp.add_argument("--ai", action="store_true",
-        help="(Reserved) ask an AI to draft the policy. Currently a no-op.")
+        help="Tailor the template with an AI provider when one is reachable. "
+             "Falls back to the static template otherwise.")
     p_gp.set_defaults(func=cmd_generate_policy)
 
     p_inst = sub.add_parser("install",
@@ -822,15 +933,50 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Overwrite files that already exist.")
     p_inst.add_argument("--dry-run", action="store_true",
         help="Print what would be written without touching the filesystem.")
+    p_inst.add_argument("--ai", action="store_true",
+        help="Tailor each template with an AI provider when one is reachable.")
     p_inst.set_defaults(func=cmd_install)
 
     p_v = sub.add_parser("version", help="Print version and exit.")
     p_v.set_defaults(func=cmd_version)
 
+    p_cfg = sub.add_parser("config",
+        help="Show the resolved layered configuration "
+             "(marketplace -> global -> repo).")
+    p_cfg.add_argument("--root", default=".",
+        help="Repository root to resolve config from. Default `.`.")
+    p_cfg.add_argument("--config-path",
+        help="Explicit repo config path. Default: auto-discovery.")
+    p_cfg.add_argument("--global-config-path",
+        help=f"Explicit global config path. Default `{config.GLOBAL_CONFIG_PATH}`.")
+    p_cfg.add_argument("--use-global-config", choices=("auto", "true", "false"),
+        default="auto",
+        help="`auto` loads the global config when present. Default `auto`.")
+    p_cfg.add_argument("--use-marketplace-config",
+        choices=("auto", "true", "false"), default="auto",
+        help="`auto` honours the config files (which default to enabled).")
+    p_cfg.add_argument("--json", action="store_true",
+        help="Emit machine-readable JSON instead of a table.")
+    p_cfg.set_defaults(func=cmd_config)
+
+    p_exp = sub.add_parser("explain",
+        help="Summarise findings and how to fix them (AI when available, "
+             "deterministic local remediation otherwise).")
+    p_exp.add_argument("--action-yml", default=None,
+        help="Path to manifest. Defaults to the resolved config value.")
+    p_exp.add_argument("--ai", dest="ai", action="store_true", default=None,
+        help="Force an AI summary attempt regardless of config.")
+    p_exp.add_argument("--no-ai", dest="ai", action="store_false",
+        help="Never call a model; use local remediation only.")
+    p_exp.add_argument("--provider", choices=ai.PROVIDERS, default=None,
+        help="Override the configured AI provider.")
+    p_exp.add_argument("--model", default=None,
+        help="Override the configured model identifier.")
+    p_exp.set_defaults(func=cmd_explain)
     p_doc = sub.add_parser("doctor",
         help="End-to-end repo readiness (manifest + community-health + branches).")
-    p_doc.add_argument("--action-yml", default="action.yml",
-        help="Path to manifest. Default `action.yml`.")
+    p_doc.add_argument("--action-yml", default=None,
+        help="Path to manifest. Defaults to the resolved config value (`action.yml`).")
     p_doc.add_argument("--fail-on-warning", action="store_true",
         help="Exit non-zero if any rule warns.")
     p_doc.set_defaults(func=cmd_doctor)

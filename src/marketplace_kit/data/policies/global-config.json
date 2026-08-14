@@ -1,0 +1,24 @@
+{
+  "marketplace_kit": {
+    "use_marketplace_config": true,
+
+    "org_health_repo": "{{owner}}/.github",
+    "community_health_source": "either",
+
+    "require_security": "warn",
+    "require_code_of_conduct": "warn",
+    "require_contributing": "warn",
+
+    "require_dependabot": "warn",
+    "require_codeql": "warn",
+
+    "require_ghas_code_scanning": "warn",
+    "require_ghas_secret_scanning": "warn",
+    "require_dependabot_alerts": "warn",
+
+    "enable_ai_findings_summary": true,
+    "ai_findings_summary_provider": "auto",
+
+    "skip_checks": []
+  }
+}

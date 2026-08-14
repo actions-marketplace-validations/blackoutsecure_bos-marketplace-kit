@@ -1,0 +1,14 @@
+{
+  "marketplace_kit": {
+    "use_marketplace_config": true,
+
+    "action_yml_path": "action.yml",
+    "fail_on_warning": false,
+
+    "skip_checks": [],
+
+    "require_security": "warn",
+    "require_repo_description": "warn",
+    "require_repo_topics": "warn"
+  }
+}

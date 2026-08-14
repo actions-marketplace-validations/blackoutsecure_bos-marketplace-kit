@@ -6,10 +6,8 @@ Network calls are mocked so tests are hermetic and fast.
 from __future__ import annotations
 
 import io
-from contextlib import redirect_stdout, redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import patch
-
-import pytest
 
 from marketplace_kit import cli
 from marketplace_kit.cli import main

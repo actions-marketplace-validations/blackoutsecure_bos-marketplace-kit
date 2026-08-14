@@ -10,14 +10,10 @@ from __future__ import annotations
 
 import io
 import json
-import sys
 from contextlib import redirect_stdout
 from pathlib import Path
 
-import pytest
-
 import bp_helper as bp  # type: ignore[import-not-found]  # noqa: E402
-
 
 # ---------------------------------------------------------------------------
 # parse_status_checks

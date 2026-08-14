@@ -17,7 +17,7 @@
       ".gitignore",
       ".markdownlint.yaml",
       "pyproject.toml",
-      "tests/"
+      "test/"
     ],
     "required_paths": [
       ".github/dependabot.yml",
@@ -29,6 +29,9 @@
     ],
     "include_dependabot_config": true,
     "include_github_metadata": false
+  },
+  "marketplace_kit": {
+    "use_marketplace_config": true
   },
   "managed_file_sync": {
     "use_marketplace_config": true,

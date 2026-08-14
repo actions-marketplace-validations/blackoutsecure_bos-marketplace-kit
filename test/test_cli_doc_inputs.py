@@ -10,7 +10,6 @@ import pytest
 
 from marketplace_kit.cli import main
 
-
 MANIFEST_WITH_IO = """\
 name: Test Action
 description: A test action with inputs and outputs.

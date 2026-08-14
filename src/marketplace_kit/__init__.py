@@ -1,5 +1,8 @@
 """BOS Marketplace Kit — local CLI companion to the GitHub Actions."""
 
-__version__ = "0.1.1"
+from .metadata import load as load_metadata
+from .metadata import version as _version
 
-__all__ = ["__version__"]
+__version__ = _version()
+
+__all__ = ["__version__", "load_metadata"]

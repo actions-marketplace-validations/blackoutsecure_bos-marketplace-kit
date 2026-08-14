@@ -4,17 +4,17 @@ build-backend = "hatchling.build"
 
 [project]
 name = "bos-marketplace-kit"
-version = "0.1.1"
+version = "0.2.0"
 description = "Local CLI for the BOS Marketplace Kit — validate, preview, and dry-run Marketplace Action releases without pushing."
 readme = "README.md"
 requires-python = ">=3.10"
-license = {file = "LICENSE"}
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
 authors = [{name = "Blackout Secure"}]
 keywords = ["github", "actions", "marketplace", "ci", "publishing"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
@@ -30,6 +30,7 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "pyyaml>=6.0",
+    "ruff>=0.6",
 ]
 
 [project.scripts]
@@ -40,7 +41,7 @@ marketplace-kit = "marketplace_kit.cli:main"
 # installs the package editable so the console-script entrypoint
 # (`marketplace-kit`) is also exercised end-to-end.
 pythonpath = ["src"]
-testpaths = ["tests"]
+testpaths = ["test"]
 addopts = "-ra"
 
 [project.urls]
@@ -48,11 +49,20 @@ Homepage = "https://github.com/blackoutsecure/bos-marketplace-kit"
 Issues = "https://github.com/blackoutsecure/bos-marketplace-kit/issues"
 Source = "https://github.com/blackoutsecure/bos-marketplace-kit"
 
+[tool.ruff]
+line-length = 100
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4"]
+ignore = ["E501"]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/marketplace_kit"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "src/marketplace_kit/data/policies" = "marketplace_kit/data/policies"
+"src/marketplace_kit/data/marketplace-kit-marketplace-config.json" = "marketplace_kit/data/marketplace-kit-marketplace-config.json"
 
 [tool.hatch.build.targets.sdist]
 include = [
@@ -61,5 +71,5 @@ include = [
     "LICENSE",
     "NOTICE",
     "pyproject.toml",
-    "tests",
+    "test",
 ]

@@ -10,7 +10,6 @@ import pytest
 
 from marketplace_kit.cli import main
 
-
 VALID_MANIFEST = """\
 name: My Action
 description: A test action.

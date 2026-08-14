@@ -10,7 +10,8 @@ Four tiers are merged in cascade order, each overriding the one above:
 3. **Global config** — optional org/hub-level file, auto-discovered at
    ``.github/bos-marketplace-kit-global-config.json``.
 4. **Repo config** — optional per-repo file, auto-discovered at
-   ``.github/bos-universal-config.json`` (preferred) and friends.
+   ``.github/workflow-configs/bos-universal-config.json`` (preferred,
+   matching the automation-hub convention) and friends.
 
 Workflow inputs are applied last by the composite action: any input left
 empty falls through to the resolved config value.
@@ -32,8 +33,12 @@ from typing import Any, NamedTuple
 # key is treated as the section itself, so a dedicated file can be flat.
 SECTION = "marketplace_kit"
 
-# Repo-level config, in discovery order. First existing file wins.
+# Repo-level config, in discovery order. First existing file wins. The
+# hub-conventional path comes first (automation-hub moved its universal
+# config there); the legacy root path stays as a fallback for repos that
+# haven't migrated.
 REPO_CONFIG_CANDIDATES: tuple[str, ...] = (
+    ".github/workflow-configs/bos-universal-config.json",
     ".github/bos-universal-config.json",
     "bos-universal-config.json",
     "marketplace-kit.json",

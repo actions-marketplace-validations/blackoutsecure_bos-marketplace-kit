@@ -108,6 +108,23 @@ def test_repo_config_discovery_order(tmp_path: Path) -> None:
     assert values["require_yamllint"] == "warn"
 
 
+def test_hub_conventional_path_is_preferred_over_legacy(tmp_path: Path) -> None:
+    """automation-hub moved its universal config under workflow-configs/."""
+    _write(tmp_path, ".github/bos-universal-config.json",
+           {"marketplace_kit": {"require_yamllint": "fail"}})
+    _write(tmp_path, ".github/workflow-configs/bos-universal-config.json",
+           {"marketplace_kit": {"require_yamllint": "warn"}})
+    resolved = config.resolve(tmp_path)
+    assert resolved.values["require_yamllint"] == "warn"
+    assert any("workflow-configs" in tier for tier in resolved.tiers)
+
+
+def test_legacy_path_still_works_alone(tmp_path: Path) -> None:
+    _write(tmp_path, ".github/bos-universal-config.json",
+           {"marketplace_kit": {"require_yamllint": "fail"}})
+    assert config.resolve(tmp_path).values["require_yamllint"] == "fail"
+
+
 def test_explicit_config_path_must_exist(tmp_path: Path) -> None:
     with pytest.raises(config.ConfigError):
         config.resolve(tmp_path, repo_config_path="nope.json")

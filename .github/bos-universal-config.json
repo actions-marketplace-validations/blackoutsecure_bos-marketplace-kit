@@ -16,6 +16,7 @@
       ".gitattributes",
       ".gitignore",
       ".markdownlint.json",
+      ".markdownlint.yaml",
       ".shellcheckrc",
       ".yamllint.yml",
       "pyproject.toml",

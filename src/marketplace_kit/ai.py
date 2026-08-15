@@ -36,6 +36,13 @@ PROVIDERS = ("auto", "none", "github-models", "external")
 
 GITHUB_MODELS_ENDPOINT = "https://models.github.ai/inference"
 DEFAULT_MODEL = "openai/gpt-4o-mini"
+TASK_DEFAULT_MODELS = {
+    "summary": "openai/gpt-4o-mini",
+    "relevance": "openai/gpt-4o-mini",
+    "metadata": "openai/gpt-4o-mini",
+    "categories": "openai/gpt-4o-mini",
+    "readme": "openai/gpt-4o-mini",
+}
 
 _TIMEOUT = 20
 _MAX_FINDINGS = 25
@@ -84,6 +91,7 @@ def detect_provider(
     requested: str = "auto",
     *,
     model: str = "",
+    task: str = "summary",
     environ: dict[str, str] | None = None,
 ) -> Provider:
     """Resolve the provider to use, without contacting it."""
@@ -92,6 +100,19 @@ def detect_provider(
     none = Provider("none", "", "", "")
     if requested == "none":
         return none
+
+    def selected_model() -> str:
+        explicit = model.strip()
+        if explicit and explicit.lower() != "auto":
+            return explicit
+        task_key = "".join(
+            character if character.isalnum() else "_" for character in task.upper()
+        )
+        return (
+            _env(environ, f"GITHUB_MODELS_MODEL_{task_key}")
+            or _env(environ, "GITHUB_MODELS_MODEL")
+            or TASK_DEFAULT_MODELS.get(task, DEFAULT_MODEL)
+        )
 
     def github_models() -> Provider | None:
         token = (_env(environ, "GITHUB_MODELS_TOKEN")
@@ -102,7 +123,7 @@ def detect_provider(
             "github-models",
             _env(environ, "GITHUB_MODELS_ENDPOINT") or GITHUB_MODELS_ENDPOINT,
             token,
-            model or _env(environ, "GITHUB_MODELS_MODEL") or DEFAULT_MODEL,
+            selected_model(),
         )
 
     def external() -> Provider | None:
@@ -114,7 +135,7 @@ def detect_provider(
             "external",
             endpoint,
             token,
-            model or _env(environ, "OPENAI_API_MODEL") or DEFAULT_MODEL,
+            selected_model(),
         )
 
     if requested == "github-models":
@@ -252,7 +273,9 @@ def summarize(
     if not enabled:
         return Summary(local, "local", "AI summary disabled by config")
 
-    provider = detect_provider(requested_provider, model=model, environ=environ)
+    provider = detect_provider(
+        requested_provider, model=model, task="summary", environ=environ
+    )
     if not provider.usable:
         return Summary(local, "local", "no AI provider credentials detected")
 
@@ -316,7 +339,9 @@ def score_relevance(
     if not enabled:
         return RelevanceScore(-1, "local", "", "AI relevance scoring disabled by config")
 
-    provider = detect_provider(requested_provider, model=model, environ=environ)
+    provider = detect_provider(
+        requested_provider, model=model, task="relevance", environ=environ
+    )
     if not provider.usable:
         return RelevanceScore(-1, "local", "", "no AI provider credentials detected")
 
@@ -373,7 +398,9 @@ def tailor_template(
     if not enabled:
         return Summary(draft, "local", "AI drafting disabled")
 
-    provider = detect_provider(requested_provider, model=model, environ=environ)
+    provider = detect_provider(
+        requested_provider, model=model, task="template", environ=environ
+    )
     if not provider.usable:
         return Summary(draft, "local", "no AI provider credentials detected")
 

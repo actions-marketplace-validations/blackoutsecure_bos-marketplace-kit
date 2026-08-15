@@ -49,7 +49,7 @@
 
     "enable_ai_findings_summary": true,
     "ai_findings_summary_provider": "auto",
-    "ai_model": "",
+    "ai_model": "auto",
     "local_heuristic_fallback": true,
 
     "profile": "baseline",
@@ -63,7 +63,7 @@
       "weights": {},
       "ai_enabled": true,
       "ai_provider": "auto",
-      "ai_model": "",
+      "ai_model": "auto",
       "force_manual_approval": false,
       "approval_environment": "marketplace-release-approval",
       "state_path": ".github/marketplace-relevance-score.json"

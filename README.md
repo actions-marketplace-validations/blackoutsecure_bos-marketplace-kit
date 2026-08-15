@@ -2014,6 +2014,35 @@ lowercase `a-z0-9-`, ≤ 50 chars each, ≤ 20 total. You can mix and
 match — e.g. set `description` explicitly, let AI pick `topics`,
 leave `homepage` alone.
 
+Description has an additional explicit mode:
+
+| `description_mode` | Behaviour |
+| --- | --- |
+| `auto` (default) | Explicit description, then AI when enabled, then the existing README seed. |
+| `fallback` | Explicit description, then `description_fallback`, then the README seed; AI is skipped. |
+| `existing` | Leave the current repository description unchanged. |
+
+`ai_model` defaults to `auto` across the kit. In that mode the action chooses
+the optimized default for the task and honors task-specific environment
+overrides such as `GITHUB_MODELS_MODEL_METADATA`, followed by the generic
+`GITHUB_MODELS_MODEL`. An explicit model identifier still wins. The validator,
+relevance gate, metadata sync, category classifier, and future content tools
+are separate AI tasks, so one model setting does not silently control all of
+them.
+
+The existing README is used by default (`use_existing_readme: true`). Full
+README regeneration is deliberately disabled by default and is not performed
+by the release metadata sync yet: generating and replacing a public README
+needs a separate reviewable content-generation workflow with a contents-write
+token, secret redaction, preview, and approval step.
+
+The action manifest itself is also intentionally not rewritten by the About-box
+sync. `name`, `branding.icon`, and `branding.color` are Marketplace-facing
+source files and should be changed through a reviewed commit to `action.yml`,
+with `marketplace-kit check` run afterward. The current action supports static
+manifest values; automatic AI manifest rewriting remains a separate opt-in
+feature to design and review rather than a side effect of publishing.
+
 Defaults are framed around "this is a release":
 
 * `show_releases: true` — the Releases sidebar widget is on.
@@ -2250,7 +2279,7 @@ config → repo config).
 | `weights` | `{}` | Per-pattern weight overrides, e.g. `{"Dockerfile": 40}`. |
 | `ai_enabled` | `true` | Opportunistic AI refinement of the deterministic score. `false` also switches unmet-threshold handling to require manual approval. |
 | `ai_provider` | `auto` | Same provider values as the rest of the kit (`auto`, `github-models`, `external`, `none`). |
-| `ai_model` | `''` | Override the model identifier. |
+| `ai_model` | `auto` | Auto-select the optimized model for relevance scoring; override with a model identifier. |
 | `force_manual_approval` | `false` | Require environment approval even with AI enabled. |
 | `approval_environment` | `marketplace-release-approval` | GitHub Environment name to gate `release` behind when approval is required. |
 | `state_path` | `.github/marketplace-relevance-score.json` | Where the running score is persisted. |

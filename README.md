@@ -2071,6 +2071,159 @@ Outputs: `description`, `description_source` (`explicit` | `ai` |
 Use `dry_run: 'true'` to render the proposed payload to the job
 summary without calling the API.
 
+### Auto-publish relevance gate (`auto_publish`)
+
+Off by default. When enabled, the marketplace kicker's `push` trigger
+scores each push's changed files for how "release-worthy" they are and
+automatically runs `release` + `metadata` once that score is significant
+enough — instead of every real release needing a manual
+`workflow_dispatch`, and instead of trivial commits (README typos,
+test-only changes, CI tuning) triggering a release at all.
+
+#### Why a running score, not a single push's score
+
+A single commit that only touches `README.md` is intentionally
+low-scored — but three README-adjacent commits in a row that quietly
+add up to a meaningful documentation overhaul, or a run of small
+bugfix commits, are real. The gate persists a **running total**
+(`.github/marketplace-relevance-score.json`, committed back to the repo
+after every scored push) so it accumulates across commits instead of
+resetting to zero each time, and only resets once a release it
+triggered actually succeeds.
+
+#### How a diff is scored
+
+1. **Deterministic, path-based heuristic** — always runs, no network,
+   no config beyond an optional weight table. Every changed path is
+   matched against an ordered pattern table; the file with the
+   **highest** weight decides the diff's score (not a sum — one
+   `action.yml` change is exactly as significant whether it comes with
+   one test file or a hundred).
+
+   | Category | Example paths | Default weight |
+   | --- | --- | ---: |
+   | Entrypoint | `action.yml`, `run.sh`, `lib.sh`, `helper.py`, `src/**` | 35-40 |
+   | Ecosystem source | `*.py`, `*.sh`, `*.js`, `*.ts`, `*.go` (outside `src/`) | 25 |
+   | Dependency manifests | `pyproject.toml`, `package.json`, `go.mod`, `requirements*.txt` | 20 |
+   | Docs | `README.md` | 15 |
+   | Legal | `LICENSE`, `NOTICE` | 5 |
+   | Tests | `test/**`, `tests/**`, `test_*.py` | 3 |
+   | CI / dotfile metadata | `.github/workflows/**`, `.editorconfig`, `.gitignore`, lint configs | 1 |
+   | Anything else | — | 2 |
+
+   `auto_publish.repo_type` selects the profile these weights come
+   from: `composite-action` (default) treats `action.yml` as the
+   entrypoint; `docker-action` also weighs `Dockerfile`/`entrypoint.sh`
+   at 40; `library` has no single manifest, so any top-level source
+   module is weighted like an entrypoint (35) instead of the generic
+   25. `auto_publish.weights` overrides individual patterns per repo
+   when a project's structure doesn't fit any built-in profile.
+
+2. **Optional AI refinement** — opportunistic, exactly like this kit's
+   other AI features (`enable_ai_findings_summary`, etc.): when
+   `auto_publish.ai_enabled` is `true` (the default) and a provider is
+   reachable, GitHub Models re-scores the diff from the changed-file
+   list and a short reasoning sentence; a missing token, network error,
+   or malformed response silently falls back to the deterministic
+   score. Both scores are always reported side by side in the job
+   summary for transparency, whichever one was actually used.
+
+#### The publish decision
+
+- `running_total < threshold` → **hold**. Nothing publishes; the score
+  persists and the next push adds to it.
+- `running_total >= threshold` and AI scoring is **enabled** (the
+  default) → **auto-publish**. `release` and `metadata` run
+  immediately, then the score resets to 0.
+- `running_total >= threshold` but AI scoring is **disabled**
+  (`auto_publish.ai_enabled: false`) → **manual approval required**.
+  The `release` job runs behind the GitHub Environment named in
+  `auto_publish.approval_environment` (default
+  `marketplace-release-approval`) instead of publishing unattended.
+  Create that environment in **Settings → Environments** and add the
+  people or teams who should approve release-worthy pushes as required
+  reviewers — that list lives in GitHub's own environment protection
+  rules, not in this kit's config, so it can't drift out of sync with
+  who actually has access.
+- `auto_publish.force_manual_approval: true` forces the same
+  environment gate even when AI scoring is enabled — for a repo that
+  wants the scoring/threshold mechanics (so trivial pushes still never
+  queue a release) but still wants a human to click approve before
+  anything actually ships.
+
+Rationale for gating on "AI enabled" rather than "AI reachable": a
+reachability failure (rate limit, transient network error, missing
+`models: read` grant) is exactly the kind of thing that should fall
+back to the deterministic score and keep working unattended — that's
+the same contract every other AI feature in this kit already has.
+Whether a human must review a release, on the other hand, is a
+deliberate policy decision a repo makes on purpose; it shouldn't
+silently flip because a model API had a bad minute.
+
+#### Recommended default: threshold `65`
+
+Chosen so that a single `action.yml`/entrypoint change (weight 40)
+plus almost anything else non-trivial (a docs update, a dependency
+bump) clears it in one push, while a lone docs-only push (15) or a
+lone dependency bump (20) needs to repeat, or combine with something
+else, before it does. Tune it with the repo's own release cadence in
+mind: lower it (e.g. `40`) for a repo that wants every entrypoint
+change to ship on its own; raise it (e.g. `80-100`) for a repo that
+prefers batching several changes per release.
+
+#### Configuration
+
+All keys live under `marketplace_kit.auto_publish` in
+`.github/bos-universal-config.json` (same cascade as every other
+`marketplace_kit` setting: marketplace defaults → optional org global
+config → repo config).
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `enabled` | `false` | Turn the gate on for this repo. |
+| `threshold` | `65` | Running-score threshold (1-100) that triggers a publish. |
+| `repo_type` | `auto` | `auto` \| `composite-action` \| `docker-action` \| `library` — selects the weight profile. |
+| `weights` | `{}` | Per-pattern weight overrides, e.g. `{"Dockerfile": 40}`. |
+| `ai_enabled` | `true` | Opportunistic AI refinement of the deterministic score. `false` also switches unmet-threshold handling to require manual approval. |
+| `ai_provider` | `auto` | Same provider values as the rest of the kit (`auto`, `github-models`, `external`, `none`). |
+| `ai_model` | `''` | Override the model identifier. |
+| `force_manual_approval` | `false` | Require environment approval even with AI enabled. |
+| `approval_environment` | `marketplace-release-approval` | GitHub Environment name to gate `release` behind when approval is required. |
+| `state_path` | `.github/marketplace-relevance-score.json` | Where the running score is persisted. |
+
+Each repo type can (and should) tune its own criteria — a Docker-based
+action's most significant file is its `Dockerfile`, not `action.yml`;
+a plain library has no single entrypoint at all. Ask an AI assistant
+to propose a `weights` block from a repo's actual file layout if the
+built-in profiles don't fit; review the result before enabling
+`auto_publish`, the same as any other policy change.
+
+#### Reporting
+
+Every scored push writes a job-summary table: repo type, deterministic
+score, AI score (or why it wasn't used), the final score, the running
+total against the threshold, the publish/hold decision, and — when
+publishing — whether it's gated behind manual approval. A full
+per-file weight breakdown follows underneath so a maintainer can see
+exactly which change tipped the score.
+
+#### Best practices
+
+- Start with `ai_enabled: true` (the default) and the recommended
+  threshold; watch a few real pushes' job summaries before tuning
+  `weights` or the threshold for a specific repo.
+- Prefer `force_manual_approval: true` over `ai_enabled: false` for a
+  repo that wants both smart scoring *and* a human gate — disabling AI
+  entirely also disables the score refinement, not just the
+  auto-publish decision.
+- Keep the `approval_environment`'s reviewer list current in
+  **Settings → Environments** whenever team membership changes; this
+  kit intentionally does not duplicate that list in JSON config.
+- Treat a repo whose changes are almost always release-worthy (a
+  single-purpose action with few unrelated files) as a candidate for a
+  low threshold; treat a monorepo-flavored kit with lots of
+  test/tooling churn as a candidate for a higher one.
+
 ## 💻 Local usage (CLI)
 
 The kit ships a standalone `marketplace-kit` CLI for local triage or

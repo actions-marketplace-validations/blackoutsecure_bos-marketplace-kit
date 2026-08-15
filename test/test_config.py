@@ -109,18 +109,19 @@ def test_repo_config_discovery_order(tmp_path: Path) -> None:
 
 
 def test_hub_conventional_path_is_preferred_over_legacy(tmp_path: Path) -> None:
-    """automation-hub moved its universal config under workflow-configs/."""
-    _write(tmp_path, ".github/bos-universal-config.json",
-           {"marketplace_kit": {"require_yamllint": "fail"}})
+    """Hub kickers pass `.github/bos-universal-config.json` explicitly."""
     _write(tmp_path, ".github/workflow-configs/bos-universal-config.json",
+           {"marketplace_kit": {"require_yamllint": "fail"}})
+    _write(tmp_path, ".github/bos-universal-config.json",
            {"marketplace_kit": {"require_yamllint": "warn"}})
     resolved = config.resolve(tmp_path)
     assert resolved.values["require_yamllint"] == "warn"
-    assert any("workflow-configs" in tier for tier in resolved.tiers)
+    assert any(tier.endswith(".github/bos-universal-config.json")
+               for tier in resolved.tiers)
 
 
 def test_legacy_path_still_works_alone(tmp_path: Path) -> None:
-    _write(tmp_path, ".github/bos-universal-config.json",
+    _write(tmp_path, ".github/workflow-configs/bos-universal-config.json",
            {"marketplace_kit": {"require_yamllint": "fail"}})
     assert config.resolve(tmp_path).values["require_yamllint"] == "fail"
 
@@ -489,3 +490,27 @@ def test_uses_code_scanning_kit_detects_only_real_calls(tmp_path: Path) -> None:
     assert config.uses_code_scanning_kit(tmp_path) is False
     _workflow_calling_code_scanning_kit(tmp_path)
     assert config.uses_code_scanning_kit(tmp_path) is True
+
+
+# ---------------------------------------------------------------------------
+# Job-summary provenance
+# ---------------------------------------------------------------------------
+
+def test_provenance_env_reports_identity_and_cascade(tmp_path: Path) -> None:
+    _write(tmp_path, ".github/bos-universal-config.json",
+           {"marketplace_kit": {"require_yamllint": "fail"}})
+    env = config.provenance_env(config.resolve(tmp_path))
+    assert env["MK_KIT_NAME"] == "bos-marketplace-kit"
+    assert env["MK_KIT_VERSION"]
+    assert env["MK_KIT_METADATA_SOURCE"] in {"distribution", "bundled"}
+    assert env["MK_CONFIG_SOURCE"].endswith(".github/bos-universal-config.json")
+    assert "marketplace config" in env["MK_CONFIG_TIERS"]
+
+
+def test_provenance_env_values_are_single_line(tmp_path: Path) -> None:
+    """$GITHUB_ENV is appended without heredoc quoting."""
+    _workflow_calling_code_scanning_kit(tmp_path)
+    env = config.provenance_env(config.resolve(tmp_path))
+    assert env["MK_CONFIG_SUPPRESSED"], "deferral should be reported"
+    for value in env.values():
+        assert "\n" not in value

@@ -142,7 +142,9 @@ jobs:
   # ---------------------------------------------------------------------------
   preflight:
     name: Preflight (PAT mode)
-    runs-on: ubuntu-latest
+    # Org-shared runner label; accepts a bare label or a JSON array.
+    # Falls back to `ubuntu-latest` when the variable is unset.
+    runs-on: ${{ fromJSON(startsWith(vars.DEFAULT_RUNNER || 'ubuntu-latest', '[') && (vars.DEFAULT_RUNNER || 'ubuntu-latest') || format('"{0}"', vars.DEFAULT_RUNNER || 'ubuntu-latest')) }}
     timeout-minutes: 2
     outputs:
       use_advanced_pat: ${{ steps.mode.outputs.use_advanced_pat }}

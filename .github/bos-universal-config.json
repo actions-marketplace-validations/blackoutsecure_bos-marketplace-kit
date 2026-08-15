@@ -15,8 +15,11 @@
       ".editorconfig",
       ".gitattributes",
       ".gitignore",
-      ".markdownlint.yaml",
+      ".markdownlint.json",
+      ".shellcheckrc",
+      ".yamllint.yml",
       "pyproject.toml",
+      "scripts/",
       "test/"
     ],
     "required_paths": [

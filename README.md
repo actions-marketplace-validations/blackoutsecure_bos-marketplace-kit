@@ -365,7 +365,8 @@ Tiers merge in order — each one overrides the one above it:
    at `.github/marketplace-kit-global-config.json`. Create it only if
    you want org-wide policy; nothing breaks when it is absent.
 4. **Repo config (optional)** — per-repo overrides in the `marketplace_kit`
-   section of `.github/workflow-configs/bos-universal-config.json` (preferred), or
+   section of `.github/bos-universal-config.json` (preferred, and the path
+   every automation-hub kicker passes explicitly), or
    `bos-universal-config.json`, `marketplace-kit.json`,
    `.marketplace-kit.json`.
 5. **Workflow inputs** — anything you set non-empty in `with:` wins over
@@ -440,7 +441,7 @@ instead of silently degrading to a default.
 }
 ```
 
-**Repo override** — `.github/workflow-configs/bos-universal-config.json`:
+**Repo override** — `.github/bos-universal-config.json`:
 
 ```json
 {
@@ -511,7 +512,7 @@ equivalent here, so nothing is lost by deferring.
 workflows: if your repo calls a hub reusable that in turn calls the kit, the
 reference is not visible here, so set `defer_to_code_scanning_kit: true`
 explicitly. This repository does exactly that — see
-[`.github/workflow-configs/bos-universal-config.json`](.github/workflow-configs/bos-universal-config.json).
+[`.github/bos-universal-config.json`](.github/bos-universal-config.json).
 
 Deferred rules are reported as `skip` with the reason, and listed under
 **Suppressed** in `marketplace-kit config` — they are never silently dropped:

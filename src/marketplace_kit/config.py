@@ -8,10 +8,10 @@ Four tiers are merged in cascade order, each overriding the one above:
    ``data/marketplace-config.json``. Enabled by default; disable with
    ``"use_marketplace_config": false`` in any lower tier.
 3. **Global config** — optional org/hub-level file, auto-discovered at
-   ``.github/bos-marketplace-kit-global-config.json``.
+   ``.github/marketplace-kit-global-config.json``.
 4. **Repo config** — optional per-repo file, auto-discovered at
-   ``.github/workflow-configs/bos-universal-config.json`` (preferred,
-   matching the automation-hub convention) and friends.
+   ``.github/bos-universal-config.json`` (preferred, matching the
+   automation-hub convention) and friends.
 
 Workflow inputs are applied last by the composite action: any input left
 empty falls through to the resolved config value.
@@ -29,17 +29,24 @@ from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any, NamedTuple
 
+try:
+    from . import metadata
+except ImportError:  # run as a script by the composite action
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from marketplace_kit import metadata
+
 # Section key inside every config document. A document that has no such
 # key is treated as the section itself, so a dedicated file can be flat.
 SECTION = "marketplace_kit"
 
-# Repo-level config, in discovery order. First existing file wins. The
-# hub-conventional path comes first (automation-hub moved its universal
-# config there); the legacy root path stays as a fallback for repos that
-# haven't migrated.
+# Repo-level config, in discovery order. First existing file wins.
+# `.github/bos-universal-config.json` is the automation-hub convention:
+# every hub-managed kicker passes that exact path to `universal-config`,
+# so a repo that keeps its config anywhere else is invisible to the org
+# workflows. The remaining entries are fallbacks for unmigrated repos.
 REPO_CONFIG_CANDIDATES: tuple[str, ...] = (
-    ".github/workflow-configs/bos-universal-config.json",
     ".github/bos-universal-config.json",
+    ".github/workflow-configs/bos-universal-config.json",
     "bos-universal-config.json",
     "marketplace-kit.json",
     ".marketplace-kit.json",
@@ -607,6 +614,25 @@ def _write_github_env(env: dict[str, str], target: Path) -> None:
             handle.write(f"{name}={value}\n")
 
 
+def provenance_env(resolved: Resolved) -> dict[str, str]:
+    """Identity and cascade provenance for the job summary.
+
+    Values are single-line so they survive a plain ``$GITHUB_ENV``
+    append without heredoc quoting.
+    """
+    meta = metadata.load()
+    return {
+        "MK_KIT_NAME": meta.name,
+        "MK_KIT_VERSION": meta.version,
+        "MK_KIT_METADATA_SOURCE": meta.source,
+        "MK_CONFIG_TIERS": " > ".join(resolved.tiers).replace("\n", " "),
+        "MK_CONFIG_SOURCE": resolved.tiers[-1].replace("\n", " "),
+        "MK_CONFIG_SUPPRESSED": "; ".join(
+            f"{key}: {reason}" for key, reason in sorted(resolved.suppressed.items())
+        ).replace("\n", " "),
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     root = Path(os.environ.get("MK_CONFIG_ROOT", "."))
@@ -624,6 +650,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     env = as_env(resolved.values)
+    env.update(provenance_env(resolved))
     print("Resolved marketplace-kit configuration")
     for tier in resolved.tiers:
         print(f"  tier: {tier}")

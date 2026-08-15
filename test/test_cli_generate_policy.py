@@ -279,3 +279,18 @@ def test_no_mutual_exclusion_warning_when_sibling_absent(
     ])
     assert rc == 0, err
     assert "warning" not in err.lower()
+
+
+@pytest.mark.parametrize("kind", [
+    "codeql-workflow",
+    "scorecard-workflow",
+    "security-devops-workflow",
+    "code-scan-workflow",
+])
+def test_generated_workflows_honour_default_runner(kind: str) -> None:
+    """Generated workflows must resolve the org runner, not pin ubuntu."""
+    rc, out, err = _run(["generate-policy", kind, "--owner", "acme", "--stdout"])
+    assert rc == 0, err
+    assert "vars.DEFAULT_RUNNER" in out
+    assert "'ubuntu-latest'" in out, "fallback label must remain"
+    assert "runs-on: ubuntu-latest" not in out

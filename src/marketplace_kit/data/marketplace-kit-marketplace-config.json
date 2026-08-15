@@ -54,6 +54,19 @@
 
     "profile": "baseline",
     "enable_security_scan": true,
-    "defer_to_code_scanning_kit": "auto"
+    "defer_to_code_scanning_kit": "auto",
+
+    "auto_publish": {
+      "enabled": false,
+      "threshold": 65,
+      "repo_type": "auto",
+      "weights": {},
+      "ai_enabled": true,
+      "ai_provider": "auto",
+      "ai_model": "",
+      "force_manual_approval": false,
+      "approval_environment": "marketplace-release-approval",
+      "state_path": ".github/marketplace-relevance-score.json"
+    }
   }
 }

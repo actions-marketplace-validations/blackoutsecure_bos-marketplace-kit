@@ -1,0 +1,98 @@
+name: Marketplace auto-publish relevance gate
+description: >-
+  Score whether the changes since the last publish are significant enough to
+  automatically release a new Marketplace version, so trivial commits (docs,
+  tests, CI-only) don't trigger a release and real changes don't sit waiting
+  for a manual dispatch.
+
+  Part of the `bos-marketplace-kit` toolkit. See the `auto_publish` section
+  of `.github/bos-universal-config.json` (`marketplace_kit.auto_publish`)
+  for every option, and the kit README's "Auto-publish relevance gate"
+  section for the full design and recommended defaults.
+
+  Scoring: a deterministic, path-based heuristic always runs (see
+  `relevance.py`); an AI provider (GitHub Models by default) optionally
+  refines it when `ai_enabled` is true and a provider is reachable — this
+  mirrors every other AI feature in this kit: opportunistic, never required,
+  silently falls back to the deterministic score. The **AI-enabled/disabled
+  state itself** (not provider reachability) controls whether an unmet
+  threshold requires manual approval instead of just waiting for more
+  commits — see `requires_manual_approval` below.
+
+  The running score persists in a small JSON file committed back to the
+  repo (`auto_publish.state_path`, default
+  `.github/marketplace-relevance-score.json`) so several small-but-real
+  commits in a row still eventually cross the threshold, instead of each
+  one resetting to zero.
+
+  Pure python3 (stdlib only) + git. No third-party actions consumed.
+
+inputs:
+  config_path:
+    description: 'Repo config path. Empty auto-discovers `.github/bos-universal-config.json`.'
+    required: false
+    default: ''
+  global_config_path:
+    description: 'Org/hub-level config path. Empty uses the conventional path.'
+    required: false
+    default: ''
+  base_ref:
+    description: 'Base ref for the diff. Default `HEAD~1` (the previous commit).'
+    required: false
+    default: 'HEAD~1'
+  head_ref:
+    description: 'Head ref for the diff. Default `HEAD`.'
+    required: false
+    default: 'HEAD'
+  reset:
+    description: >-
+      `true` to reset the running score to 0 instead of scoring — call this
+      as a follow-up step after a release this gate triggered actually
+      succeeds. A gate that reports "publish" but whose release job then
+      fails must not silently lose the accumulated score.
+    required: false
+    default: 'false'
+
+outputs:
+  deterministic_score:
+    description: 'The path-based heuristic score for this diff (0-100).'
+    value: ${{ steps.score.outputs.deterministic_score }}
+  final_score:
+    description: 'AI-refined score when available, else the deterministic score.'
+    value: ${{ steps.score.outputs.final_score }}
+  ai_used:
+    description: '`true` when an AI provider actually produced the score.'
+    value: ${{ steps.score.outputs.ai_used }}
+  running_total:
+    description: 'Persisted running score after adding this diff (0-100).'
+    value: ${{ steps.score.outputs.running_total }}
+  threshold:
+    description: 'The configured publish threshold this run compared against.'
+    value: ${{ steps.score.outputs.threshold }}
+  should_publish:
+    description: '`true` when the running total has crossed the threshold.'
+    value: ${{ steps.score.outputs.should_publish }}
+  requires_manual_approval:
+    description: >-
+      `true` when a human must approve before the release proceeds, even if
+      `should_publish` is true — because AI scoring is disabled by config,
+      or `force_manual_approval` is set. Gate the release job behind the
+      `approval_environment` output when this is `true`.
+    value: ${{ steps.score.outputs.requires_manual_approval }}
+  approval_environment:
+    description: 'The GitHub Environment name to gate the release job behind when approval is required.'
+    value: ${{ steps.score.outputs.approval_environment }}
+
+runs:
+  using: composite
+  steps:
+    - id: score
+      shell: bash
+      env:
+        CONFIG_PATH: ${{ inputs.config_path }}
+        GLOBAL_CONFIG_PATH: ${{ inputs.global_config_path }}
+        BASE_REF: ${{ inputs.base_ref }}
+        HEAD_REF: ${{ inputs.head_ref }}
+        RESET: ${{ inputs.reset }}
+        GITHUB_MODELS_TOKEN: ${{ github.token }}
+      run: bash "${GITHUB_ACTION_PATH}/run.sh"

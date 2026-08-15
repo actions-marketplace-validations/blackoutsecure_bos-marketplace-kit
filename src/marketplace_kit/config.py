@@ -266,6 +266,76 @@ def discover_global_config(root: Path, *, path: str | None = None) -> Path | Non
 
 
 # ---------------------------------------------------------------------------
+# Auto-publish relevance gate — a separate, lightly-typed config surface.
+#
+# Deliberately not folded into `OPTIONS`/`resolve()`: that pipeline exists to
+# drive `run.sh` via flat env vars for the `check` composite. This is a pure
+# in-process CLI feature with nested config (`weights`, `approvers`), so it
+# reads the raw merged section dict directly instead.
+# ---------------------------------------------------------------------------
+
+AUTO_PUBLISH_REPO_TYPES = ("auto", "composite-action", "docker-action", "library")
+
+
+class AutoPublishSettings(NamedTuple):
+    enabled: bool = False
+    threshold: int = 65
+    repo_type: str = "auto"
+    weight_overrides: dict[str, int] = {}
+    ai_enabled: bool = True
+    ai_provider: str = "auto"
+    ai_model: str = ""
+    force_manual_approval: bool = False
+    approval_environment: str = "marketplace-release-approval"
+    state_path: str = ".github/marketplace-relevance-score.json"
+
+
+def _merged_auto_publish_dict(root: Path | str = ".") -> dict[str, Any]:
+    """Shallow-merge `auto_publish` across marketplace -> global -> repo tiers."""
+    root = Path(root)
+    merged: dict[str, Any] = {}
+    for section in (
+        load_marketplace_config(),
+        extract_section(_read_json(p), origin=str(p)) if (p := discover_global_config(root)) else {},
+        extract_section(_read_json(p), origin=str(p)) if (p := discover_repo_config(root)) else {},
+    ):
+        candidate = section.get("auto_publish")
+        if isinstance(candidate, dict):
+            merged.update(candidate)
+    return merged
+
+
+def auto_publish_settings(root: Path | str = ".") -> AutoPublishSettings:
+    """Resolve the auto-publish relevance-gate policy for this repo."""
+    raw = _merged_auto_publish_dict(root)
+    repo_type = str(raw.get("repo_type", "auto"))
+    if repo_type not in AUTO_PUBLISH_REPO_TYPES:
+        raise ConfigError(
+            f"auto_publish.repo_type must be one of {AUTO_PUBLISH_REPO_TYPES} (got: {repo_type!r})"
+        )
+    threshold = int(raw.get("threshold", 65))
+    if not 1 <= threshold <= 100:
+        raise ConfigError(f"auto_publish.threshold must be 1-100 (got: {threshold})")
+    weight_overrides = raw.get("weights") or {}
+    if not isinstance(weight_overrides, dict):
+        raise ConfigError("auto_publish.weights must be a JSON object")
+    return AutoPublishSettings(
+        enabled=bool(raw.get("enabled", False)),
+        threshold=threshold,
+        repo_type=repo_type,
+        weight_overrides={str(k): int(v) for k, v in weight_overrides.items()},
+        ai_enabled=bool(raw.get("ai_enabled", True)),
+        ai_provider=str(raw.get("ai_provider", "auto")),
+        ai_model=str(raw.get("ai_model", "")),
+        force_manual_approval=bool(raw.get("force_manual_approval", False)),
+        approval_environment=str(
+            raw.get("approval_environment", "marketplace-release-approval")
+        ),
+        state_path=str(raw.get("state_path", ".github/marketplace-relevance-score.json")),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Validation / coercion
 # ---------------------------------------------------------------------------
 

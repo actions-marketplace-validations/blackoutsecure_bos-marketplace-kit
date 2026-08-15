@@ -321,6 +321,109 @@ def cmd_version(_args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Subcommand: relevance-score (marketplace auto-publish gate)
+# ---------------------------------------------------------------------------
+
+def _changed_files_from_git(root: Path, base: str, head: str) -> list[str]:
+    result = subprocess.run(  # noqa: S603
+        ["git", "diff", "--name-only", f"{base}...{head}"],
+        cwd=root, capture_output=True, text=True, check=True,
+    )
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
+def cmd_relevance_score(args: argparse.Namespace) -> int:
+    from . import relevance  # local import: keeps this feature's deps isolated
+
+    root = Path(args.root)
+    settings = config.auto_publish_settings(root)
+    state_path = root / (args.state_path or settings.state_path)
+    state = relevance.ScoreState.load(state_path)
+
+    if args.reset:
+        state.running_total = 0
+        state.last_reset_sha = args.head or "manual-reset"
+        state.last_reset_at = args.at or ""
+        if not args.dry_run:
+            state.save(state_path)
+        print(json.dumps({"reset": True, "running_total": 0}))
+        return 0
+
+    if args.files:
+        changed_files = [f.strip() for f in args.files.split("\n") if f.strip()]
+    else:
+        try:
+            changed_files = _changed_files_from_git(root, args.base, args.head)
+        except subprocess.CalledProcessError as exc:
+            print(f"error: git diff failed: {exc.stderr.strip()}", file=sys.stderr)
+            return 2
+
+    deterministic_score, breakdown = relevance.score_changed_files(
+        changed_files,
+        repo_type=settings.repo_type,
+        weight_overrides=settings.weight_overrides,
+    )
+
+    ai_result = ai.score_relevance(
+        changed_files,
+        deterministic_score,
+        enabled=settings.ai_enabled,
+        requested_provider=settings.ai_provider,
+        model=settings.ai_model,
+    )
+    final_score = ai_result.score if ai_result.score >= 0 else deterministic_score
+    source = ai_result.source if ai_result.score >= 0 else "local"
+
+    state.running_total = min(state.running_total + final_score, relevance.MAX_SCORE)
+    should_publish = state.running_total >= settings.threshold
+    requires_manual_approval = settings.force_manual_approval or not settings.ai_enabled
+
+    state.record(
+        sha=args.head or "",
+        at=args.at or "",
+        diff_score=final_score,
+        source=source,
+        published=bool(should_publish and not requires_manual_approval),
+    )
+    if should_publish:
+        # The caller resets state only after a *successful* publish
+        # (via `--reset`) — a gate that reports "publish" but whose
+        # downstream release job fails must not silently lose the score.
+        pass
+    if not args.dry_run:
+        state.save(state_path)
+
+    result = {
+        "deterministic_score": deterministic_score,
+        "ai_score": ai_result.score,
+        "ai_source": ai_result.source,
+        "ai_reasoning": ai_result.reasoning,
+        "ai_fallback_reason": ai_result.fallback_reason,
+        "final_score": final_score,
+        "running_total": state.running_total,
+        "threshold": settings.threshold,
+        "should_publish": should_publish,
+        "requires_manual_approval": requires_manual_approval,
+        "approval_environment": settings.approval_environment,
+        "repo_type": settings.repo_type,
+        "breakdown": [
+            {"path": f.path, "weight": f.weight, "pattern": f.pattern} for f in breakdown
+        ],
+    }
+    if args.json:
+        print(json.dumps(result, indent=2))
+    else:
+        print(f"deterministic score: {deterministic_score}/100")
+        print(f"ai score:            {ai_result.score if ai_result.score >= 0 else '(not used)'} "
+              f"({ai_result.source}{': ' + ai_result.fallback_reason if ai_result.fallback_reason else ''})")
+        print(f"final score:         {final_score}/100")
+        print(f"running total:       {state.running_total}/{settings.threshold} (threshold)")
+        print(f"decision:            {'publish' if should_publish else 'hold'}"
+              f"{' (requires manual approval)' if should_publish and requires_manual_approval else ''}")
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # Subcommand: doctor
 # ---------------------------------------------------------------------------
 
@@ -945,6 +1048,29 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_v = sub.add_parser("version", help="Print version and exit.")
     p_v.set_defaults(func=cmd_version)
+
+    p_rs = sub.add_parser("relevance-score",
+        help="Score whether recent changes are significant enough to "
+             "auto-publish a Marketplace release (see `auto_publish` config).")
+    p_rs.add_argument("--root", default=".",
+        help="Repository root. Default `.`.")
+    p_rs.add_argument("--base", default="HEAD~1",
+        help="Base ref for `git diff` when --files is not given. Default `HEAD~1`.")
+    p_rs.add_argument("--head", default="HEAD",
+        help="Head ref for `git diff` when --files is not given. Default `HEAD`.")
+    p_rs.add_argument("--files",
+        help="Newline-separated changed-file paths. Skips the git diff when given.")
+    p_rs.add_argument("--state-path",
+        help="Override the persisted score state file path.")
+    p_rs.add_argument("--reset", action="store_true",
+        help="Reset the running score to 0 (call this after a successful publish).")
+    p_rs.add_argument("--dry-run", action="store_true",
+        help="Compute and print the result without writing the state file.")
+    p_rs.add_argument("--at", default="",
+        help="ISO-8601 timestamp recorded in the state history. Optional.")
+    p_rs.add_argument("--json", action="store_true",
+        help="Emit machine-readable JSON instead of a human-readable summary.")
+    p_rs.set_defaults(func=cmd_relevance_score)
 
     p_cfg = sub.add_parser("config",
         help="Show the resolved layered configuration "

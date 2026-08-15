@@ -64,6 +64,13 @@ class Finding(NamedTuple):
     message: str
 
 
+class RelevanceScore(NamedTuple):
+    score: int          # 0-100, or -1 when the model was not consulted
+    source: str          # "ai" | "local" (deterministic only)
+    reasoning: str        # short model explanation; "" for local
+    fallback_reason: str  # why the model was not used; "" when it was
+
+
 # ---------------------------------------------------------------------------
 # Provider detection
 # ---------------------------------------------------------------------------
@@ -261,6 +268,78 @@ def summarize(
     if not text.strip():
         return Summary(local, "local", f"{provider.name} returned an empty response")
     return Summary(text.strip(), provider.name, "")
+
+
+# ---------------------------------------------------------------------------
+# Marketplace-publish relevance scoring — used by the auto-publish gate
+# ---------------------------------------------------------------------------
+
+_RELEVANCE_SYSTEM_PROMPT = (
+    "You are a release engineer deciding whether a set of changed files in a "
+    "GitHub Marketplace Action repository is significant enough to warrant "
+    "publishing a new release. Score how release-worthy the changes are on "
+    "a 0-100 scale: 0 means purely cosmetic/no-op (typo fixes, comments, "
+    "CI-only, test-only), 100 means a major functional change users of the "
+    "action would need immediately (a new input, a behavior change, a "
+    "security fix). Respond with ONLY a JSON object on one line: "
+    '{"score": <integer 0-100>, "reasoning": "<one short sentence>"}. '
+    "No markdown, no code fences, no other text."
+)
+
+
+def _relevance_prompt(changed_files: Iterable[str], deterministic_score: int) -> str:
+    files = "\n".join(f"- {path}" for path in changed_files)
+    return (
+        f"Deterministic heuristic score (file-path based): {deterministic_score}/100.\n"
+        f"Changed files:\n{files}\n\n"
+        "Re-score 0-100 using the changed file paths as your only signal "
+        "(you do not have the diff content)."
+    )
+
+
+def score_relevance(
+    changed_files: Iterable[str],
+    deterministic_score: int,
+    *,
+    enabled: bool = True,
+    requested_provider: str = "auto",
+    model: str = "",
+    environ: dict[str, str] | None = None,
+) -> RelevanceScore:
+    """AI-refine a deterministic relevance score, never depending on a model.
+
+    Mirrors :func:`summarize`'s opportunistic contract: a missing token,
+    disabled provider, network error, or malformed response silently falls
+    back to the deterministic score instead of failing the caller.
+    """
+    changed_files = list(changed_files)
+    if not enabled:
+        return RelevanceScore(-1, "local", "", "AI relevance scoring disabled by config")
+
+    provider = detect_provider(requested_provider, model=model, environ=environ)
+    if not provider.usable:
+        return RelevanceScore(-1, "local", "", "no AI provider credentials detected")
+
+    if not changed_files:
+        return RelevanceScore(-1, "local", "", "no changed files to score")
+
+    try:
+        text = _chat(
+            provider,
+            _relevance_prompt(changed_files, deterministic_score),
+            system=_RELEVANCE_SYSTEM_PROMPT,
+        )
+        parsed = json.loads(text)
+        score = int(parsed["score"])
+        reasoning = str(parsed.get("reasoning") or "").strip()
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError,
+            OSError, ValueError, KeyError, IndexError, TypeError,
+            json.JSONDecodeError) as exc:
+        return RelevanceScore(-1, "local", "", f"{provider.name} unavailable ({type(exc).__name__})")
+
+    if not 0 <= score <= 100:
+        return RelevanceScore(-1, "local", "", f"{provider.name} returned an out-of-range score")
+    return RelevanceScore(score, provider.name, reasoning, "")
 
 
 # ---------------------------------------------------------------------------

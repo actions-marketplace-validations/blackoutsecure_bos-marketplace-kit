@@ -416,7 +416,7 @@ callers.
 | `repo_description_max_length` / `repo_description_min_length` | integer | RM002 bounds. |
 | `enable_ai_findings_summary` | boolean | Default `true`. `false` prohibits every model call. |
 | `ai_findings_summary_provider` | string | `auto`, `none`, `github-models`, or `external`. |
-| `ai_model` | string | Model identifier. Empty uses the provider default. |
+| `ai_model` | string | Model identifier. `auto` selects the optimized model for the task. |
 | `local_heuristic_fallback` | boolean | Default `true`. Emit deterministic remediation when no model is used. |
 | `profile` | string | `baseline` (default) or `strict`. See [Posture profiles](#posture-profiles). |
 | `enable_security_scan` | boolean | Default `true`. `false` skips the whole security-posture rule group. |
@@ -2049,7 +2049,7 @@ Defaults are framed around "this is a release":
 * `show_deployments: false` / `show_packages: false` — opt-in.
 * `generate_topics: false` — opt-in. Set `true` and (optionally)
   pass `topics_fallback` for when AI is unavailable.
-* `ai_enabled: true`, `ai_model: openai/gpt-4o-mini`. Falls back
+* `ai_enabled: true`, `ai_model: auto`. Falls back
   deterministically to the raw README seed when the AI call fails
   (most commonly because the job lacks `models: read`).
 

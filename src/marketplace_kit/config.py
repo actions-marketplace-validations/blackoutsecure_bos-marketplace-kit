@@ -183,7 +183,7 @@ OPTIONS: tuple[Option, ...] = (
 
     Option("enable_ai_findings_summary", "ENABLE_AI_FINDINGS_SUMMARY", "bool", False),
     Option("ai_findings_summary_provider", "AI_PROVIDER", "provider", "auto"),
-    Option("ai_model", "AI_MODEL", "text", ""),
+    Option("ai_model", "AI_MODEL", "text", "auto"),
     Option("local_heuristic_fallback", "AI_LOCAL_FALLBACK", "bool", True),
 
     Option("profile", "MK_PROFILE", "profile", "baseline"),
@@ -284,7 +284,7 @@ class AutoPublishSettings(NamedTuple):
     weight_overrides: dict[str, int] = {}
     ai_enabled: bool = True
     ai_provider: str = "auto"
-    ai_model: str = ""
+    ai_model: str = "auto"
     force_manual_approval: bool = False
     approval_environment: str = "marketplace-release-approval"
     state_path: str = ".github/marketplace-relevance-score.json"
@@ -326,7 +326,7 @@ def auto_publish_settings(root: Path | str = ".") -> AutoPublishSettings:
         weight_overrides={str(k): int(v) for k, v in weight_overrides.items()},
         ai_enabled=bool(raw.get("ai_enabled", True)),
         ai_provider=str(raw.get("ai_provider", "auto")),
-        ai_model=str(raw.get("ai_model", "")),
+        ai_model=str(raw.get("ai_model", "auto")),
         force_manual_approval=bool(raw.get("force_manual_approval", False)),
         approval_environment=str(
             raw.get("approval_environment", "marketplace-release-approval")

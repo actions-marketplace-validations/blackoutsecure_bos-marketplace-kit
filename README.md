@@ -2071,6 +2071,37 @@ Outputs: `description`, `description_source` (`explicit` | `ai` |
 Use `dry_run: 'true'` to render the proposed payload to the job
 summary without calling the API.
 
+### Release label (`release_label`)
+
+Controls the two flags GitHub attaches to the Release the marketplace
+kicker publishes: **pre-release** and **latest**. Set
+`marketplace.release_label` in `.github/bos-universal-config.json` to
+one of:
+
+| Value | Effect |
+| --- | --- |
+| `auto` (default) | Derived from the source branch — see below. |
+| `none` | Neither pre-release nor "latest" is set. |
+| `prerelease` | Labeled non-production ready; never marked "latest". |
+| `latest` | Labeled the latest release for this repository. |
+
+**`auto`** looks at the branch the release is being cut from
+(`marketplace.source_branch`, or the repo's default branch when unset)
+and matches this org's two-branch convention: `dev` is pre-release,
+`main` is the production "latest" release, and anything else gets
+neither label. This means a repo using the standard `dev`/`main` split
+needs no configuration at all to get sensible release labeling out of
+the box.
+
+Cascade (first tier that sets it wins): repo
+`.github/bos-universal-config.json` → org-wide
+`sync-files/config/marketplace-kicker-global-config.json` in
+`bos-automation-hub` → the kit's own built-in default, `auto`. An org
+that, for example, wants every repo pre-release by default until
+explicitly promoted can set `release_label: prerelease` once in the
+global config instead of every repo's own config; any repo can still
+override it locally.
+
 ### Auto-publish relevance gate (`auto_publish`)
 
 Off by default. When enabled, the marketplace kicker's `push` trigger

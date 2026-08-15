@@ -1585,6 +1585,14 @@ Marketplace workflow rather than Launchpad because Launchpad owns a different
 pipeline: upstream tracking, Docker/Balena artifacts, security scans, and
 optional GitHub Releases.
 
+By default, promote-only also requires a recent published stable release on
+the source branch (`dev`) before it proceeds. The default freshness window is
+168 hours (7 days), and the release tag must be reachable from the source
+branch. Configure `marketplace.require_source_release: false` to disable the
+gate, or change `marketplace.source_release_max_age_hours` in the global or
+repository config. The normal `release` operation does not require this prior
+release because it creates the release as part of its own transaction.
+
 ### Step 8 — Publish to Marketplace
 
 Navigate to your repo's Releases page on GitHub. On the `v1.0.0`

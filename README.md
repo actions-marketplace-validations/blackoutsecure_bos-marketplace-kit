@@ -1959,6 +1959,39 @@ The composite outputs `is_compliant`, `drift_summary` (multi-line),
 and `mode_applied`. Use these to gate downstream jobs or post a
 summary comment.
 
+### Marketplace categories (`primary_category` / `secondary_category`)
+
+The metadata sync also evaluates the Marketplace listing's primary and
+secondary categories. Both default to `auto`. In auto mode, GitHub Models
+reads the README and returns the best category for each position plus an
+independent confidence score from 0 to 1. Set either input to a category slug
+to make that side explicit, or set it to an empty string to leave that side
+alone.
+
+For the marketplace kicker, configure the values under
+`marketplace.repo_metadata`:
+
+```json
+{
+  "marketplace": {
+    "repo_metadata": {
+      "categories": {
+        "primary": "auto",
+        "secondary": "auto"
+      },
+      "marketplace_slug": "my-action-listing"
+    }
+  }
+}
+```
+
+The action queries the current listing categories before every sync and writes
+`match`, `mismatch`, `listing-not-found`, or `lookup-failed` to the job
+summary, together with the proposed categories and both confidence scores.
+GitHub currently exposes category reads but no supported Marketplace category
+write mutation, so mismatches are reported with the listing-editor action
+required; the sync never falsely reports a category update.
+
 ### Repo `About` box sync (`repo-metadata`)
 
 Keeps the public-facing repo `About` box honest after each release.

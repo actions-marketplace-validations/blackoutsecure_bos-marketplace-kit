@@ -37,7 +37,12 @@
       "enable": true,
       "homepage": "https://github.com/marketplace/actions/blackout-secure-marketplace-kit",
       "generate_topics": true,
-      "topics_fallback": "github-actions marketplace composite-action ci-cd release-management devsecops publishing"
+      "topics_fallback": "github-actions marketplace composite-action ci-cd release-management devsecops publishing",
+      "categories": {
+        "primary": "auto",
+        "secondary": "auto"
+      },
+      "marketplace_slug": "blackout-secure-marketplace-kit"
     }
   },
   "marketplace_kit": {

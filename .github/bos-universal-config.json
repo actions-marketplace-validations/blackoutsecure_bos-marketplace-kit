@@ -55,15 +55,5 @@
       "bos_universal_marketplace_kicker",
       "bos_universal_action_test_kicker"
     ]
-  },
-  "action_test": {
-    "python_versions": [
-      "3.10",
-      "3.11",
-      "3.12"
-    ],
-    "python_packages": [
-      ".[dev]"
-    ]
   }
 }

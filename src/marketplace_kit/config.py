@@ -701,11 +701,24 @@ def provenance_env(resolved: Resolved) -> dict[str, str]:
         if requested_version == "auto" and ref_name.startswith("v")
         else requested_version if requested_version != "auto" else meta.version
     )
-    resolved_license = (
-        metadata.read_repo_license(os.environ.get("MK_CONFIG_ROOT", "."))
-        if requested_license == "auto"
-        else requested_license
-    )
+    resolved_license = requested_license
+    if requested_license == "auto":
+        root = Path(os.environ.get("MK_CONFIG_ROOT", "."))
+        resolved_license = metadata.read_repo_license(root)
+        if resolved_license == "unknown":
+            for filename in metadata.license_files():
+                path = root / filename
+                if path.is_file():
+                    try:
+                        from . import ai
+                    except ImportError:
+                        from marketplace_kit import ai
+                    inference = ai.infer_license(
+                        path.read_text(encoding="utf-8", errors="replace"),
+                        environ=dict(os.environ),
+                    )
+                    resolved_license = inference.identifier
+                    break
     return {
         "MK_KIT_NAME": meta.name,
         "MK_KIT_VERSION": meta.version,

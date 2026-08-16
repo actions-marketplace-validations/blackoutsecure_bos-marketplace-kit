@@ -78,6 +78,12 @@ class RelevanceScore(NamedTuple):
     fallback_reason: str  # why the model was not used; "" when it was
 
 
+class LicenseInference(NamedTuple):
+    identifier: str
+    provider: str
+    fallback_reason: str
+
+
 # ---------------------------------------------------------------------------
 # Provider detection
 # ---------------------------------------------------------------------------
@@ -291,6 +297,52 @@ def summarize(
     if not text.strip():
         return Summary(local, "local", f"{provider.name} returned an empty response")
     return Summary(text.strip(), provider.name, "")
+
+
+# ---------------------------------------------------------------------------
+# Marketplace license inference — only used when local detection is unknown
+# ---------------------------------------------------------------------------
+
+_LICENSE_SYSTEM_PROMPT = (
+    "You identify SPDX license identifiers from license text. Respond with "
+    "ONLY a JSON object with one key named identifier and an SPDX value or unknown. "
+    "Never guess a license that is not supported by the supplied text."
+)
+
+
+def infer_license(
+    license_text: str,
+    *,
+    enabled: bool = True,
+    requested_provider: str = "auto",
+    model: str = "",
+    environ: dict[str, str] | None = None,
+) -> LicenseInference:
+    """Infer an SPDX identifier from bounded LICENSE text, never fatally."""
+    if not enabled:
+        return LicenseInference("unknown", "local", "AI license inference disabled")
+    provider = detect_provider(
+        requested_provider, model=model, task="metadata", environ=environ
+    )
+    if not provider.usable:
+        return LicenseInference("unknown", "local", "no AI provider credentials detected")
+    bounded_text = license_text[:12000]
+    if not bounded_text.strip():
+        return LicenseInference("unknown", "local", "license file is empty")
+    try:
+        parsed = json.loads(_chat(
+            provider,
+            "LICENSE text:\\n" + bounded_text,
+            system=_LICENSE_SYSTEM_PROMPT,
+        ))
+        identifier = str(parsed["identifier"]).strip()
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError,
+            OSError, ValueError, KeyError, IndexError, TypeError,
+            json.JSONDecodeError) as exc:
+        return LicenseInference("unknown", "local", f"{provider.name} unavailable ({type(exc).__name__})")
+    if not identifier or len(identifier) > 64 or any(char.isspace() for char in identifier):
+        return LicenseInference("unknown", "local", f"{provider.name} returned an invalid identifier")
+    return LicenseInference(identifier, provider.name, "")
 
 
 # ---------------------------------------------------------------------------

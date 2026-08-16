@@ -102,6 +102,13 @@ def version() -> str:
 
 
 _LICENSE_FILES = ("LICENSE", "LICENSE.md", "LICENSE.txt", "COPYING")
+
+
+def license_files() -> tuple[str, ...]:
+    """Return the supported repository license filenames."""
+    return _LICENSE_FILES
+
+
 _LICENSE_PATTERNS = (
     (r"apache license(?:,? version)?\s*2(?:\.0)?", "Apache-2.0"),
     (r"mit license", "MIT"),

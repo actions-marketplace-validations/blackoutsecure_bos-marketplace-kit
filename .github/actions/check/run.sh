@@ -1087,6 +1087,8 @@ SORTED_REPORT="$(sort -t'|' -k1,1 "${REPORT_FILE}")"
   echo "| Config cascade | ${MK_CONFIG_TIERS:-runtime defaults} |"
   # shellcheck disable=SC2006  # markdown backticks in literal strings, not command substitution
   echo "| Effective config | \`${MK_CONFIG_SOURCE:-runtime defaults}\` |"
+  echo "| Publishing version | \`${MK_PUB_VERSION:-unknown}\` (release tag when auto) |"
+  echo "| Publishing license | \`${MK_PUB_LICENSE:-unknown}\` (LICENSE/COPYING when auto) |"
   if [ -n "${MK_CONFIG_SUPPRESSED:-}" ]; then
     echo "| Delegated rules | ${MK_CONFIG_SUPPRESSED} |"
   fi

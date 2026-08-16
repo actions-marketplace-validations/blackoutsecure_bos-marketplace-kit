@@ -1,13 +1,5 @@
-# yamllint configuration for blackoutsecure/bos-marketplace-kit.
-#
-# Optimised for GitHub Actions YAML which uses:
-#   * Long inline expressions (${{ ... }}) — line-length relaxed.
-#   * Many "on:" / "yes/no" truthy values which yamllint flags by default.
-#   * Multi-document files (---) are rare here, so disabled.
-#
-# Mirror to src/marketplace_kit/data/policies/yamllint.yml when shipped
-# as a consumer template.
-
+# Managed by Blackout Secure Managed File Sync — configure services in .github/bos-universal-config.json.
+# Do not edit — every sync run overwrites this file.
 extends: default
 
 ignore: |
@@ -42,14 +34,6 @@ rules:
     spaces: 2
     indent-sequences: consistent
     check-multi-line-strings: false
-
-  # Allow visually-aligned env: / with: blocks (e.g. column-aligned RHS
-  # values), which is a deliberate readability convention across the
-  # repo's workflows and composite actions. `max-spaces-before` is left
-  # at the default 0 so accidental whitespace-before-colon is still
-  # caught.
-  colons:
-    max-spaces-after: -1
 
   # Document-start markers (---) are noisy in workflow files.
   document-start: disable

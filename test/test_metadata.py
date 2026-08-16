@@ -74,6 +74,17 @@ def test_version_helper_matches_load() -> None:
     assert metadata.version() == metadata.load().version
 
 
+def test_read_repo_license_from_spdx_header(tmp_path: Path) -> None:
+    (tmp_path / "LICENSE").write_text(
+        "SPDX-License-Identifier: Apache-2.0\n", encoding="utf-8"
+    )
+    assert metadata.read_repo_license(tmp_path) == "Apache-2.0"
+
+
+def test_read_repo_license_returns_unknown_when_missing(tmp_path: Path) -> None:
+    assert metadata.read_repo_license(tmp_path) == "unknown"
+
+
 def test_package_dunder_version_uses_metadata() -> None:
     import marketplace_kit
 

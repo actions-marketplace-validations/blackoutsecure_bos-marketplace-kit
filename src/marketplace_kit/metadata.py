@@ -14,6 +14,8 @@ composite action runs the source tree straight off a runner without a
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
 from typing import NamedTuple
 
 DISTRIBUTION = "bos-marketplace-kit"
@@ -97,3 +99,36 @@ def load() -> PackageMetadata:
 
 def version() -> str:
     return load().version
+
+
+_LICENSE_FILES = ("LICENSE", "LICENSE.md", "LICENSE.txt", "COPYING")
+_LICENSE_PATTERNS = (
+    (r"apache license(?:,? version)?\s*2(?:\.0)?", "Apache-2.0"),
+    (r"mit license", "MIT"),
+    (r"gnu general public license.*version\s*3", "GPL-3.0-only"),
+    (r"gnu general public license.*version\s*2", "GPL-2.0-only"),
+    (r"bsd 3-clause|redistribution and use.*three conditions", "BSD-3-Clause"),
+    (r"bsd 2-clause|redistribution and use.*two conditions", "BSD-2-Clause"),
+)
+
+
+def read_repo_license(root: Path | str = ".") -> str:
+    """Return a best-effort SPDX identifier from a repository license file."""
+    root = Path(root)
+    for filename in _LICENSE_FILES:
+        path = root / filename
+        if not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")[:12000]
+        except OSError:
+            continue
+        spdx = re.search(r"SPDX-License-Identifier:\s*([^\s*]+)", text, re.IGNORECASE)
+        if spdx:
+            return spdx.group(1).strip()
+        lowered = text.lower()
+        for pattern, identifier in _LICENSE_PATTERNS:
+            if re.search(pattern, lowered):
+                return identifier
+        return "unknown"
+    return "unknown"

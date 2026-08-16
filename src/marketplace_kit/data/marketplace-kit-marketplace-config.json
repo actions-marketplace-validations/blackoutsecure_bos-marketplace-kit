@@ -44,6 +44,8 @@
     "require_repo_topics": "warn",
     "repo_description_max_length": 350,
     "repo_description_min_length": 30,
+    "version": "auto",
+    "license": "auto",
 
     "auto_generate_missing": false,
 

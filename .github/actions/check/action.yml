@@ -452,6 +452,14 @@ inputs:
       `0` to disable the lower-bound check.
     required: false
     default: ''
+  version:
+    description: 'Public release version. `auto` derives it from the current release tag when available.'
+    required: false
+    default: ''
+  license:
+    description: 'SPDX license identifier. `auto` reads the repository LICENSE/COPYING file.'
+    required: false
+    default: ''
 
 outputs:
   passed:
@@ -594,6 +602,8 @@ runs:
         MK_IN_REQUIRE_REPO_TOPICS:         ${{ inputs.require_repo_topics }}
         MK_IN_REPO_DESCRIPTION_MAX_LENGTH: ${{ inputs.repo_description_max_length }}
         MK_IN_REPO_DESCRIPTION_MIN_LENGTH: ${{ inputs.repo_description_min_length }}
+        MK_IN_VERSION:                     ${{ inputs.version }}
+        MK_IN_LICENSE:                     ${{ inputs.license }}
         MK_IN_AUTO_GENERATE_MISSING:       ${{ inputs.auto_generate_missing }}
         MK_IN_ENABLE_AI_FINDINGS_SUMMARY:  ${{ inputs.enable_ai_findings_summary }}
         MK_IN_AI_FINDINGS_SUMMARY_PROVIDER: ${{ inputs.ai_findings_summary_provider }}

@@ -178,6 +178,8 @@ OPTIONS: tuple[Option, ...] = (
     _policy("require_repo_topics", "REQ_REPO_TOPICS"),
     Option("repo_description_max_length", "REPO_DESC_MAX_LEN", "int", 350),
     Option("repo_description_min_length", "REPO_DESC_MIN_LEN", "int", 30),
+    Option("version", "MK_PUB_VERSION", "text", "auto"),
+    Option("license", "MK_PUB_LICENSE", "text", "auto"),
 
     Option("auto_generate_missing", "AUTO_GENERATE_MISSING", "bool", False),
 
@@ -691,6 +693,19 @@ def provenance_env(resolved: Resolved) -> dict[str, str]:
     append without heredoc quoting.
     """
     meta = metadata.load()
+    requested_version = resolved.values.get("version", "auto")
+    requested_license = resolved.values.get("license", "auto")
+    ref_name = os.environ.get("GITHUB_REF_NAME", "").strip()
+    resolved_version = (
+        ref_name.removeprefix("v")
+        if requested_version == "auto" and ref_name.startswith("v")
+        else requested_version if requested_version != "auto" else meta.version
+    )
+    resolved_license = (
+        metadata.read_repo_license(os.environ.get("MK_CONFIG_ROOT", "."))
+        if requested_license == "auto"
+        else requested_license
+    )
     return {
         "MK_KIT_NAME": meta.name,
         "MK_KIT_VERSION": meta.version,
@@ -700,6 +715,8 @@ def provenance_env(resolved: Resolved) -> dict[str, str]:
         "MK_CONFIG_SUPPRESSED": "; ".join(
             f"{key}: {reason}" for key, reason in sorted(resolved.suppressed.items())
         ).replace("\n", " "),
+        "MK_PUB_VERSION": resolved_version,
+        "MK_PUB_LICENSE": resolved_license,
     }
 
 

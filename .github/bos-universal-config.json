@@ -54,6 +54,13 @@
     "use_marketplace_config": true,
     "defer_to_code_scanning_kit": true
   },
+  "remediation": {
+    "mode": "notify",
+    "min_confidence": "high",
+    "allow_workflow_changes": false,
+    "allow_security_control_changes": false,
+    "allow_auto_merge": false
+  },
   "managed_file_sync": {
     "use_marketplace_config": true,
     "services": [

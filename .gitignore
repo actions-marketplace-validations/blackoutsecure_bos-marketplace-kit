@@ -18,6 +18,7 @@ scratch/
 
 
 # >>> managed-file-sync:common >>>
+# Managed by Blackout Secure Managed File Sync — configure services in .github/bos-universal-config.json.
 # OS + editor noise
 .DS_Store
 Thumbs.db
@@ -45,6 +46,7 @@ __pycache__/
 # <<< managed-file-sync:common <<<
 
 # >>> managed-file-sync:coverage_artifacts >>>
+# Managed by Blackout Secure Managed File Sync — configure services in .github/bos-universal-config.json.
 .coverage
 .coverage.*
 coverage.xml

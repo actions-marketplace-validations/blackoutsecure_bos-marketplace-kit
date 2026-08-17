@@ -93,6 +93,12 @@ def _env(environ: dict[str, str] | None, key: str) -> str:
     return (source.get(key) or "").strip()
 
 
+def _https_endpoint(value: str) -> str:
+    """Normalize an endpoint and reject cleartext transport before requests."""
+    endpoint = value.strip()
+    return endpoint if endpoint.startswith("https://") else ""
+
+
 def detect_provider(
     requested: str = "auto",
     *,
@@ -127,14 +133,14 @@ def detect_provider(
             return None
         return Provider(
             "github-models",
-            _env(environ, "GITHUB_MODELS_ENDPOINT") or GITHUB_MODELS_ENDPOINT,
+            _https_endpoint(_env(environ, "GITHUB_MODELS_ENDPOINT") or GITHUB_MODELS_ENDPOINT),
             token,
             selected_model(),
         )
 
     def external() -> Provider | None:
         token = _env(environ, "OPENAI_API_KEY")
-        endpoint = _env(environ, "OPENAI_API_ENDPOINT")
+        endpoint = _https_endpoint(_env(environ, "OPENAI_API_ENDPOINT"))
         if not (token and endpoint):
             return None
         return Provider(

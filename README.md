@@ -191,7 +191,7 @@ meaning *take the value from the [config cascade](#️-configuration-inheritance
 | `fail_on_warning` | (config) | `true` to treat OP### warnings as failures. |
 | `skip_checks` | (config) | Comma-separated check IDs to skip (e.g. `OP003,SC002`). |
 | `workflow_dir` | `auto` | Workflow directory to scan. `auto` uses the config value; "" skips. |
-| `github_token` | `${{ github.token }}` | Token used for org-health API lookups. Defaults to `github.token`; set explicitly to use a PAT/fine-grained token with cross-repo contents:read. |
+| `github_token` | (config) | Token used for org-health API lookups. Defaults to `github.token`; set explicitly to use a PAT/fine-grained token with cross-repo contents:read. |
 | `org_health_repo` | (config) | `owner/repo` containing fallback community-health files (e.g. `blackoutsecure/.github`). Defaults to `${owner}/.github` if empty. |
 | `check_org_health` | (config) | `true` to enable org-health lookups for CH### rules. |
 | `require_security` | (config) | CH001 severity: 'fail', 'warn', or 'skip'. |

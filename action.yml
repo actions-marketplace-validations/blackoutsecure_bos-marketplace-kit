@@ -73,7 +73,7 @@ inputs:
       set explicitly to use a PAT/fine-grained token with cross-repo
       contents:read.
     required: false
-    default: ${{ github.token }}
+    default: ''
   org_health_repo:
     description: >-
       `owner/repo` containing fallback community-health files (e.g.
@@ -306,7 +306,7 @@ runs:
         fail_on_warning:         ${{ inputs.fail_on_warning }}
         skip_checks:             ${{ inputs.skip_checks }}
         workflow_dir:            ${{ inputs.workflow_dir }}
-        github_token:            ${{ inputs.github_token }}
+        github_token:            ${{ inputs.github_token || github.token }}
         org_health_repo:         ${{ inputs.org_health_repo }}
         check_org_health:        ${{ inputs.check_org_health }}
         require_security:        ${{ inputs.require_security }}

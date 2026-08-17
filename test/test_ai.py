@@ -59,6 +59,13 @@ def test_external_needs_both_key_and_endpoint() -> None:
         "external", environ={"OPENAI_API_KEY": "k"}).usable
 
 
+def test_external_rejects_non_https_endpoint() -> None:
+    assert not ai.detect_provider(
+        "external",
+        environ={"OPENAI_API_KEY": "k", "OPENAI_API_ENDPOINT": "http://example.invalid/v1"},
+    ).usable
+
+
 def test_none_never_resolves_a_provider() -> None:
     assert not ai.detect_provider(
         "none", environ={"GITHUB_TOKEN": "t"}).usable

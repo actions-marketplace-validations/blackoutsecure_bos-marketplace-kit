@@ -376,7 +376,16 @@ def cmd_relevance_score(args: argparse.Namespace) -> int:
 
     state.running_total = min(state.running_total + final_score, relevance.MAX_SCORE)
     should_publish = state.running_total >= settings.threshold
-    requires_manual_approval = settings.force_manual_approval or not settings.ai_enabled
+    # The model is prompted with attacker-influenceable data (changed file
+    # paths), so it must never be the sole reason a release publishes. When it
+    # scored a diff *higher* than the deterministic heuristic did, a human
+    # confirms the publish.
+    ai_inflated = ai_result.score > deterministic_score
+    requires_manual_approval = (
+        settings.force_manual_approval
+        or not settings.ai_enabled
+        or (should_publish and ai_inflated)
+    )
 
     state.record(
         sha=args.head or "",

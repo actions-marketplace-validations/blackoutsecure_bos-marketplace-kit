@@ -1068,7 +1068,7 @@ across two files.
 
 | | `codeql-workflow` | `code-scan-workflow` |
 |---|---|---|
-| **What ships** | Standalone `.github/workflows/codeql.yml` with `github/codeql-action` SHAs pinned inline | `.github/workflows/bos-universal-launchpad.yml` that calls the hub reusable `blackoutsecure/bos-automation-hub/.github/workflows/bos-universal-launchpad.yml@main` |
+| **What ships** | Standalone `.github/workflows/codeql.yml` with `github/codeql-action` SHAs pinned inline | `.github/workflows/bos-universal-security-kicker.yml` that calls the hub reusable security workflow |
 | **SHA rollouts** | You bump SHAs in this repo on every CodeQL release | One hub commit propagates to every consumer on next run |
 | **Covers** | CodeQL only | CodeQL **and** the `bos-code-scanning-kit@v1` composite (posture audit + actionlint / gitleaks / shellcheck) |
 | **Cross-org / external use** | Self-contained — no hub dependency | Requires read access to `blackoutsecure/bos-automation-hub` |

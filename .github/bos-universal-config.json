@@ -71,7 +71,8 @@
             "dependabot_pip",
             "editorconfig",
             "bos_universal_marketplace_kicker",
-            "bos_universal_action_test_kicker"
+            "bos_universal_action_test_kicker",
+            "python_ecosystem"
         ]
     }
 }

@@ -64,6 +64,7 @@ previews, and a local CLI that runs the same checks offline.
   * [📦 Package metadata](#-package-metadata)
   * [✅ Check rule catalogue](#-check-rule-catalogue)
   * [🚢 Publishing to Marketplace](#-publishing-to-marketplace)
+    * [Release model: immutable tags + a human review gate](#release-model-immutable-tags--a-human-review-gate)
   * [🧪 Examples](#-examples)
   * [💻 Local usage (CLI)](#-local-usage-cli)
   * [⚠️ Runtime and repository notes](#️-runtime-and-repository-notes)
@@ -308,6 +309,59 @@ bos-marketplace-kit/
 │   └── bootstrap-branch-protection.sh  # legacy fallback
 └── src/marketplace_kit/                # Python CLI
 ```
+
+### Inclusion vs. exclusion: how `promote` decides what ships
+
+`promote` is **inclusion-first, not exclusion-first**: you name an
+`allowlist_paths` (+ optional `extra_allowlist_paths`), and *every
+other path on `main` is removed on every run* — there is no additive
+mode. That single rule already gives you both directions the naive
+"exclude a list of files" model would need:
+
+* **"Don't ship this"** → simply never add it to the allowlist. It
+  can exist on `dev` (tests, fixtures, internal docs, CI config) and
+  will never reach `main`.
+* **"It shouldn't be there — remove it if it ever shows up"** → this
+  is what wipe-and-replay already does for free. Anything not on the
+  allowlist that somehow lands on `main` (a manual push, a stale
+  commit, a merged PR that bypassed `guard`) is deleted on the very
+  next promote. You do not need a separate "exclusion" config for
+  this — it is the *default* behavior, not an opt-in.
+
+Two built-in safety nets sit on top of that default, both enforced
+inside `promote` itself so they apply no matter how a caller invokes
+it:
+
+1. **Hard-blocked `.github/workflows/**`** — a GitHub Marketplace
+   publishing prerequisite (see [Marketplace requirements vs. kit
+   policy](#marketplace-requirements-vs-kit-policy)). Listing it
+   directly is a fatal error; pulling it in transitively via a parent
+   directory (e.g. bare `.github`) is silently stripped with a
+   `::notice`.
+2. **Recommended denylist (`extra_deny_patterns`)** — a *non-fatal*,
+   built-in set of dev-only/noise/secret-shaped basenames
+   (`__pycache__`, `.pytest_cache`, `.ruff_cache`, `.mypy_cache`,
+   `.tox`, `node_modules`, `.DS_Store`, `.venv`, `venv`, `.env`,
+   `.env.*`, `.git`, `.envrc`, `*.pyc`, `*.pyo`, `.coverage`, `*.pem`,
+   `*.key`, `*.pfx`) that `promote` strips from `main` on every run,
+   whether they arrived directly or transitively. This is **not** a
+   GitHub requirement — it is this kit's own recommendation, based on
+   what should never sit on a published, Marketplace-facing branch
+   (build caches, virtualenvs, local secrets/credential material).
+   Extend it per-repo with `extra_deny_patterns` (a newline-separated
+   list of extra basenames/globs, matched against every staged file's
+   basename — no path separators). Both the required-allowlist hard
+   block and the recommended denylist strip are logged and surfaced
+   as action outputs (`removed_violations`,
+   `removed_recommended_exclusions`) so the job summary always shows
+   *what* was removed and *why*.
+
+Net effect: you configure **one list** (what ships), not two
+(what ships minus what's excluded minus what's re-excluded-if-it-
+reappears). The removal behavior for anything off that list —
+including GitHub's own "don't publish workflow files" rule and this
+kit's "don't publish dev-only cruft" rule — falls out of the
+wipe-and-replay model automatically.
 
 ### Composites vs `scripts/` — when to use which
 
@@ -1245,6 +1299,59 @@ This section walks you through publishing a Marketplace-listed Action
 using `bos-marketplace-kit`. It assumes you have a working action
 repo and the rights to publish from that repo.
 
+### Release model: immutable tags + a human review gate
+
+Per [GitHub's immutable-releases guidance](https://docs.github.com/en/actions/how-tos/create-and-publish-actions/using-immutable-releases-and-tags-to-manage-your-actions-releases),
+a release tag is only truly immutable once it backs an actual GitHub
+Release; a bare Git tag can always be force-moved. `promote` already
+implements both halves of that model:
+
+* **Per-version tag** (`v1.2.3`) — created once with `git tag -a` and
+  refused if it already exists (`promote` dies rather than
+  overwriting). Cut a GitHub Release on top of it (the reusable
+  release workflow this kit ships for callers does this via
+  `gh release create`) to make it immutable in GitHub's sense —
+  consumers pinning the exact SHA/tag get a version that cannot
+  change under them.
+* **Floating major tag** (`v1`) — deliberately mutable, force-pushed
+  by `update_major_tag: true` to track the latest release in that
+  major. This is the convention GitHub's docs describe for tags "you
+  want to be able to update later," and it's what lets callers pin
+  `uses: owner/repo@v1` per the [version pinning](#version-pinning)
+  table above.
+
+If your org additionally wants **immutable releases** enabled at the
+repository level (Settings → General → *Immutable releases*, prevents
+any release/tag from being edited or deleted once published), turn it
+on — it composes cleanly with this model since `promote` never
+deletes or edits an existing tag.
+
+**Recommended: gate `promote`/`release` behind a required reviewer.**
+`contents: write` + a force-pushed major tag is powerful; put the job
+that calls `promote` behind a GitHub Environment with required
+reviewers (`environment: marketplace-release` on that job, with
+reviewers configured in repo Settings → Environments) so a human signs
+off on every publish. Attach the `check` action's job summary (and its
+AI findings summary, when `enable_ai_findings_summary` is on) to that
+PR/run as the reviewer's evidence — the model never blocks the build,
+but its summary is exactly the kind of thing a release reviewer wants
+to read before approving.
+
+**Recommended: use AI to spot-check community-health content, not
+just presence.** `CH001`–`CH006` only check that a file *exists*; they
+don't grade its content. Before a release (or periodically), point
+your AI reviewer (GitHub Models via `enable_ai_findings_summary`, or
+any other assistant) at your `CODE_OF_CONDUCT.md` and ask it to diff
+the intent against GitHub's own baseline
+([`github/docs` `.github/CODE_OF_CONDUCT.md`](https://github.com/github/docs/blob/main/.github/CODE_OF_CONDUCT.md))
+so a copy-pasted placeholder or a locally-edited-and-weakened policy
+doesn't slip through. This is a manual/human-in-the-loop step today —
+`auto_generate_missing` is reserved for a future release that could
+generate a first draft, but content-quality grading of an existing
+file is out of scope for an automated `fail`/`warn` rule (it is
+inherently judgment-based, unlike "does the file exist").
+
+
 Marketplace has FIVE non-negotiable prerequisites:
 
 1. A single `action.yml` at the root of the **default branch**.
@@ -1652,6 +1759,12 @@ creating a new repo, transferring stars, and re-publishing.
 **Promote fails with `removed_violations`.** Your `main` had
 `.github/workflows/**` paths before this promote. The kit removed
 them — verify with the dry-run output, then re-run.
+
+**`removed_recommended_exclusions` is non-empty.** `promote` also
+strips a built-in, non-fatal denylist of dev-only/noise/secret-shaped
+basenames (`__pycache__`, `.venv`, `.env`, `.git`, `*.pem`, etc.) from
+`main` on every run — this is a notice, not an error. Extend the list
+with `extra_deny_patterns` (see [🧰 What's in the box](#-whats-in-the-box)).
 
 ### Further reading
 

@@ -24,6 +24,14 @@ description: >-
     * Path traversal (`..`), absolute paths, and unescaped wildcards
       are rejected.
 
+  In addition to the strict allowlist above, a built-in recommended
+  DENYLIST (`extra_deny_patterns` to extend it) strips dev-only,
+  noise, and secret-shaped basenames (`__pycache__`, `.venv`, `.env`,
+  `.git`, `*.pem`, etc.) from the staged tree on every run, whether
+  they arrived directly or transitively via a parent directory. This
+  is the kit's own hygiene recommendation, not a GitHub requirement —
+  see `extra_deny_patterns` for the full built-in list.
+
   Mechanics:
     1. Resolve source SHA (HEAD of `source_branch`).
     2. Fetch + reset to `target_branch` (creating it from
@@ -90,6 +98,29 @@ inputs:
       Subject to the same hard-block on direct `.github/workflows*`
       entries; transitive workflow inclusion via a parent directory
       is silently stripped just like for `allowlist_paths`.
+    required: false
+    default: ''
+  extra_deny_patterns:
+    description: >-
+      Newline-separated list of EXTRA basename/glob patterns (no
+      `/`) to strip from the staged tree, on top of the kit's
+      built-in recommended denylist (`__pycache__`, `.pytest_cache`,
+      `.ruff_cache`, `.mypy_cache`, `.tox`, `node_modules`,
+      `.DS_Store`, `.venv`, `venv`, `.env`, `.env.*`, `.git`,
+      `.envrc`, `*.pyc`, `*.pyo`, `.coverage`, `*.pem`, `*.key`,
+      `*.pfx`). These are dev-only/noise/secret-shaped files that are
+      safe to remove from a Marketplace-facing branch precisely
+      because they are excluded by policy — if they ever land on
+      `target_branch` (drift, a stale commit, an operator mistake)
+      this promote removes them again on every run.
+
+      This is the kit's own recommended hygiene, NOT a GitHub
+      Marketplace requirement (only `.github/workflows/**` is, see
+      `allowlist_paths`). Matching is by basename against every
+      staged file, so it applies whether the file was pulled in
+      directly or transitively via a parent directory in the
+      allowlist. Comments (`# ...`) and blank lines are ignored; each
+      entry must be a bare basename/glob, not a path (no `/`).
     required: false
     default: ''
   tag_name:
@@ -177,6 +208,14 @@ outputs:
       cleaned up. Useful for surfacing "the promote rescued main
       from drift" in the job summary.
     value: ${{ steps.run.outputs.removed_violations }}
+  removed_recommended_exclusions:
+    description: >-
+      Newline-separated subset of `removed_paths` that matched the
+      built-in (or `extra_deny_patterns`) recommended denylist —
+      dev-only/noise/secret-shaped files stripped from the staged
+      tree even though they are not a GitHub Marketplace requirement.
+      Empty when nothing matched. See `extra_deny_patterns`.
+    value: ${{ steps.run.outputs.removed_recommended_exclusions }}
 
 runs:
   using: composite
@@ -188,6 +227,7 @@ runs:
         TARGET_BRANCH:         ${{ inputs.target_branch }}
         ALLOWLIST_PATHS:       ${{ inputs.allowlist_paths }}
         EXTRA_ALLOWLIST_PATHS: ${{ inputs.extra_allowlist_paths }}
+        EXTRA_DENY_PATTERNS:   ${{ inputs.extra_deny_patterns }}
         TAG_NAME_INPUT:        ${{ inputs.tag_name }}
         COMMIT_MESSAGE:        ${{ inputs.commit_message }}
         GIT_USER_NAME:   ${{ inputs.git_user_name }}
@@ -282,6 +322,33 @@ runs:
         for p in "${ALLOW_LIST[@]}"; do check_blocked "${p}"; done
         for p in "${EXTRA_LIST[@]}"; do check_blocked "${p}"; done
 
+        # ----- Recommended denylist (built-in + extra_deny_patterns) --------
+        # Basename/glob patterns, NOT a Marketplace requirement -- the
+        # kit's own recommended hygiene for dev-only/noise/secret-shaped
+        # files. Applied post-checkout in promote_into_worktree() below,
+        # regardless of whether the operator's allowlist pulled the file
+        # in directly or transitively via a parent directory.
+        EXTRA_DENY=()
+        if [ -n "${EXTRA_DENY_PATTERNS}" ]; then
+          while IFS= read -r line; do
+            line="${line%%#*}"
+            line="$(printf '%s' "${line}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+            [ -z "${line}" ] && continue
+            case "${line}" in
+              */*) die "input 'extra_deny_patterns' entry '${line}' must be a bare basename/glob (no '/')" ;;
+            esac
+            EXTRA_DENY+=("${line}")
+          done < <(printf '%s\n' "${EXTRA_DENY_PATTERNS}")
+        fi
+        DENY_PATTERNS=(
+          '__pycache__' '.pytest_cache' '.ruff_cache' '.mypy_cache' '.tox'
+          'node_modules' '.DS_Store' '.venv' 'venv' '.env' '.env.*' '.git'
+          '.envrc' '*.pyc' '*.pyo' '.coverage' '*.pem' '*.key' '*.pfx'
+        )
+        if [ "${#EXTRA_DENY[@]}" -gt 0 ]; then
+          DENY_PATTERNS+=("${EXTRA_DENY[@]}")
+        fi
+
         # ----- Configure git ------------------------------------------------
         git config user.name  "${GIT_USER_NAME}"
         git config user.email "${GIT_USER_EMAIL}"
@@ -341,8 +408,9 @@ runs:
         OLD_TREE_LIST="$(mktemp -t old-tree-XXXXXX.txt)"
         NEW_TREE_LIST="$(mktemp -t new-tree-XXXXXX.txt)"
         REMOVED_LIST="$(mktemp -t removed-XXXXXX.txt)"
+        DENY_REMOVED_LIST="$(mktemp -t denied-XXXXXX.txt)"
         # shellcheck disable=SC2064
-        trap "git worktree remove --force '${WORKTREE_DIR}' 2>/dev/null || true; rm -rf '${WORKTREE_DIR}' '${OLD_TREE_LIST}' '${NEW_TREE_LIST}' '${REMOVED_LIST}'" EXIT
+        trap "git worktree remove --force '${WORKTREE_DIR}' 2>/dev/null || true; rm -rf '${WORKTREE_DIR}' '${OLD_TREE_LIST}' '${NEW_TREE_LIST}' '${REMOVED_LIST}' '${DENY_REMOVED_LIST}'" EXIT
 
         if [ "${TARGET_EXISTS}" = "true" ]; then
           git worktree add --force -B "${TARGET_BRANCH}" \
@@ -354,6 +422,7 @@ runs:
 
         promote_into_worktree() {
           local sha="$1"
+          : > "${DENY_REMOVED_LIST}"
 
           ( cd "${WORKTREE_DIR}" && git ls-files ) > "${OLD_TREE_LIST}"
 
@@ -384,6 +453,31 @@ runs:
               rm -rf .github/workflows
             fi
 
+            # ----- Strip recommended-exclude files (built-in denylist) -----
+            # Dev-only/noise/secret-shaped paths that should never ship
+            # on a Marketplace-facing branch. Not a GitHub Marketplace
+            # requirement (only .github/workflows is, above) -- this is
+            # the kit's own recommended hygiene, applied regardless of
+            # whether the allowlist pulled the file in directly or
+            # transitively via a parent directory. See
+            # `extra_deny_patterns` to add repo-specific patterns.
+            DENY_MATCHES="$(
+              git ls-files | while IFS= read -r f; do
+                b="$(basename "$f")"
+                for pat in "${DENY_PATTERNS[@]}"; do
+                  case "$b" in
+                    ${pat}) echo "$f"; break ;;
+                  esac
+                done
+              done
+            )"
+            if [ -n "${DENY_MATCHES}" ]; then
+              echo "::notice title=Marketplace promote::Stripping recommended-exclude files from staged tree (dev-only/noise/secret-shaped paths; not a GitHub Marketplace requirement, but recommended hygiene for the published surface):"
+              printf '  - %s\n' ${DENY_MATCHES}
+              printf '%s\n' "${DENY_MATCHES}" | tr '\n' '\0' | xargs -0 -r git rm -f -q --
+              printf '%s\n' "${DENY_MATCHES}" >> "${DENY_REMOVED_LIST}"
+            fi
+
             git add -A
           )
 
@@ -407,9 +501,12 @@ runs:
         }
 
         emit_removal_outputs() {
-          local violations=''
+          local violations='' exclusions=''
           if [ -s "${REMOVED_LIST}" ]; then
             violations="$(grep -E '^\.github/workflows/' "${REMOVED_LIST}" || true)"
+          fi
+          if [ -s "${DENY_REMOVED_LIST}" ]; then
+            exclusions="$(sort -u "${DENY_REMOVED_LIST}")"
           fi
           {
             echo 'removed_paths<<__END_REMOVED__'
@@ -422,11 +519,20 @@ runs:
               printf '%s\n' "${violations}"
             fi
             echo '__END_VIOLATIONS__'
+            echo 'removed_recommended_exclusions<<__END_EXCLUSIONS__'
+            if [ -n "${exclusions}" ]; then
+              printf '%s\n' "${exclusions}"
+            fi
+            echo '__END_EXCLUSIONS__'
           } >> "${GITHUB_OUTPUT}"
 
           if [ -n "${violations}" ]; then
             echo "::warning title=Marketplace promote::Marketplace-violating files were present on '${TARGET_BRANCH}' and have been removed by this promote:"
             printf '  - %s\n' ${violations}
+          fi
+          if [ -n "${exclusions}" ]; then
+            echo "::notice title=Marketplace promote::Recommended-exclude files were present on '${TARGET_BRANCH}' and have been removed by this promote (see extra_deny_patterns):"
+            printf '  - %s\n' ${exclusions}
           fi
         }
 

@@ -56,7 +56,7 @@ def test_shell_script_sets_strict_mode(script: Path) -> None:
 @pytest.mark.parametrize("script", SHELL_SCRIPTS, ids=SHELL_SCRIPT_IDS)
 def test_shell_script_parses_via_bash_n(script: Path) -> None:
     result = subprocess.run(
-        ["bash", "-n", str(script)],
+        ["bash", "-n", script.resolve().as_posix()],
         capture_output=True, text=True,
     )
     assert result.returncode == 0, (
@@ -93,7 +93,7 @@ def test_shell_script_no_args_prints_usage_and_fails(script: Path) -> None:
     env.pop("GH_TOKEN", None)
     env.pop("GITHUB_TOKEN", None)
     result = subprocess.run(
-        ["bash", str(script)],
+        ["bash", script.resolve().as_posix()],
         capture_output=True, text=True, env=env,
         timeout=10,
     )
@@ -170,7 +170,7 @@ def test_bootstrap_ruleset_refuses_to_upload_with_placeholder() -> None:
     env.pop("GH_TOKEN", None)
     env.pop("GITHUB_TOKEN", None)
     result = subprocess.run(
-        ["bash", str(script), "test-org", str(RULESET_JSON)],
+        ["bash", script.resolve().as_posix(), "test-org", RULESET_JSON.resolve().as_posix()],
         capture_output=True, text=True, env=env, timeout=10,
     )
     assert result.returncode != 0, (

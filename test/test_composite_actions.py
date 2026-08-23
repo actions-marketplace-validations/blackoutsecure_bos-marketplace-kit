@@ -116,13 +116,13 @@ def test_bash_steps_parse_via_bash_n(action_path: Path) -> None:
         pytest.skip(f"{action_path}: no bash steps")
     for idx, body in steps:
         with tempfile.NamedTemporaryFile(
-            mode="w", suffix=f"_{idx}.sh", delete=False
+            mode="w", suffix=f"_{idx}.sh", delete=False, encoding="utf-8"
         ) as tmp:
             tmp.write("#!/usr/bin/env bash\nset -euo pipefail\n")
             tmp.write(body)
             tmp_path = tmp.name
         result = subprocess.run(
-            ["bash", "-n", tmp_path], capture_output=True, text=True
+            ["bash", "-n", Path(tmp_path).resolve().as_posix()], capture_output=True, text=True
         )
         Path(tmp_path).unlink(missing_ok=True)
         assert result.returncode == 0, (
@@ -183,7 +183,7 @@ def _sh_id(p: Path) -> str:
 def test_external_bash_scripts_parse_via_bash_n(sh_path: Path) -> None:
     """Every external .sh helper must compile under ``bash -n``."""
     result = subprocess.run(
-        ["bash", "-n", str(sh_path)], capture_output=True, text=True
+        ["bash", "-n", sh_path.resolve().as_posix()], capture_output=True, text=True
     )
     assert result.returncode == 0, (
         f"{sh_path}: bash -n failed:\n{result.stderr}"

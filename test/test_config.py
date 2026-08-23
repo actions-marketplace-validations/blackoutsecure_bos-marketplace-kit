@@ -75,7 +75,7 @@ def test_global_config_is_auto_discovered(tmp_path: Path) -> None:
            {"marketplace_kit": {"require_scorecard": "warn"}})
     resolved = config.resolve(tmp_path)
     assert resolved.values["require_scorecard"] == "warn"
-    assert any(config.GLOBAL_CONFIG_PATH in t for t in resolved.tiers)
+    assert any(config.GLOBAL_CONFIG_PATH in t.replace("\\", "/") for t in resolved.tiers)
 
 
 def test_repo_config_overrides_global(tmp_path: Path) -> None:
@@ -118,7 +118,7 @@ def test_hub_conventional_path_is_preferred_over_legacy(tmp_path: Path) -> None:
            {"marketplace_kit": {"require_yamllint": "warn"}})
     resolved = config.resolve(tmp_path)
     assert resolved.values["require_yamllint"] == "warn"
-    assert any(tier.endswith(".github/bos-universal-config.json")
+    assert any(tier.replace("\\", "/").endswith(".github/bos-universal-config.json")
                for tier in resolved.tiers)
 
 
@@ -505,7 +505,7 @@ def test_provenance_env_reports_identity_and_cascade(tmp_path: Path) -> None:
     assert env["MK_KIT_NAME"] == "bos-marketplace-kit"
     assert env["MK_KIT_VERSION"]
     assert env["MK_KIT_METADATA_SOURCE"] in {"distribution", "bundled"}
-    assert env["MK_CONFIG_SOURCE"].endswith(".github/bos-universal-config.json")
+    assert env["MK_CONFIG_SOURCE"].replace("\\", "/").endswith(".github/bos-universal-config.json")
     assert "marketplace config" in env["MK_CONFIG_TIERS"]
 
 
